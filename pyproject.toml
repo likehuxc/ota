@@ -1,5 +1,14 @@
 [project]
-name = "PySide Project"
+name = "d7-pmu-iap-tool"
 
 [tool.pyside6-project]
-files = ["widget.py"]
+files = [
+    "widget.py",
+    "README.md",
+    "d7_pmu_iap_tool/can/can_frame.py",
+    "d7_pmu_iap_tool/can/zlg_vci_can_driver.py",
+    "d7_pmu_iap_tool/iap/d7_crc32.py",
+    "d7_pmu_iap_tool/iap/firmware_image.py",
+    "d7_pmu_iap_tool/iap/iap_protocol.py",
+    "d7_pmu_iap_tool/iap/iap_upgrade_controller.py",
+]
