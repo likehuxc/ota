@@ -48,6 +48,8 @@ MAX_CAN_ROWS = 500
 class UpgradeWorker(QObject):
     log = Signal(str)
     progress = Signal(int)
+    can_frame = Signal(str, object)
+    succeeded = Signal()
     failed = Signal(str)
     finished = Signal()
 
@@ -61,6 +63,7 @@ class UpgradeWorker(QObject):
     def run(self) -> None:
         try:
             self.controller.upgrade(self.image, self.options)
+            self.succeeded.emit()
         except Exception as exc:
             self.failed.emit(str(exc))
         finally:
@@ -526,7 +529,7 @@ class Widget(QWidget):
         self.can_poll_timer.stop()
         try:
             driver = self._ensure_driver_open()
-            controller = IapUpgradeController(driver, self._make_protocol(), on_log=self._log)
+            controller = IapUpgradeController(driver, self._make_protocol(), on_log=self._log, on_frame=self._append_can_frame)
             controller.query_role()
         except Exception as exc:
             self._show_error(str(exc))
@@ -541,15 +544,17 @@ class Widget(QWidget):
             driver = self._ensure_driver_open()
             protocol = self._make_protocol()
             controller = IapUpgradeController(driver, protocol, on_log=lambda _: None)
-            controller.on_log = lambda message: self.upgrade_worker.log.emit(message) if self.upgrade_worker else self._log(message)
-            controller.on_progress = lambda value: self.upgrade_worker.progress.emit(value) if self.upgrade_worker else self.progress_bar.setValue(value)
-
             self.upgrade_thread = QThread(self)
             self.upgrade_worker = UpgradeWorker(controller, image, self._make_options())
+            controller.on_log = self.upgrade_worker.log.emit
+            controller.on_progress = self.upgrade_worker.progress.emit
+            controller.on_frame = self.upgrade_worker.can_frame.emit
             self.upgrade_worker.moveToThread(self.upgrade_thread)
             self.upgrade_thread.started.connect(self.upgrade_worker.run)
             self.upgrade_worker.log.connect(self._log)
             self.upgrade_worker.progress.connect(self.progress_bar.setValue)
+            self.upgrade_worker.can_frame.connect(self._append_can_frame)
+            self.upgrade_worker.succeeded.connect(self._upgrade_succeeded)
             self.upgrade_worker.failed.connect(self._show_error)
             self.upgrade_worker.finished.connect(self._upgrade_finished)
             self.upgrade_worker.finished.connect(self.upgrade_thread.quit)
@@ -571,6 +576,11 @@ class Widget(QWidget):
         self._set_busy(False)
         self.upgrade_worker = None
         self.upgrade_thread = None
+
+    @Slot()
+    def _upgrade_succeeded(self) -> None:
+        self._log("升级成功")
+        QMessageBox.information(self, "升级成功", "升级成功，设备已跳转到 APP。")
 
     @Slot()
     def send_can_frame(self) -> None:

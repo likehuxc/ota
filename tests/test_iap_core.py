@@ -28,14 +28,21 @@ class IapProtocolTests(unittest.TestCase):
         self.assertEqual(frame.id, 0x7FF)
         self.assertFalse(frame.extended)
         self.assertEqual(frame.dlc, 8)
-        self.assertEqual(bytes(frame.data), bytes([0x16, 0x19, 0x02, 0, 0, 0, 0, 0x31]))
+        self.assertEqual(bytes(frame.data), bytes([0x16, 0x19, 0x02, 0, 0, 0, 0xE9, 0x1A]))
 
     def test_builds_firmware_size_as_24_bit_big_endian(self):
         protocol = IapProtocol(target_id=0x19, can_id=0x7FF)
 
         frame = protocol.set_firmware_size(0x012345)
 
-        self.assertEqual(bytes(frame.data), bytes([0x16, 0x19, 0x05, 0x01, 0x23, 0x45, 0x00, 0x9D]))
+        self.assertEqual(bytes(frame.data), bytes([0x16, 0x19, 0x05, 0x01, 0x23, 0x45, 0xE9, 0x86]))
+
+    def test_builds_segment_info_without_tail_byte(self):
+        protocol = IapProtocol(target_id=0x19, can_id=0x7FF)
+
+        frame = protocol.set_segment_info(section_num=3, section_size=0x0123)
+
+        self.assertEqual(bytes(frame.data), bytes([0x16, 0x19, 0x06, 0x01, 0x23, 0x00, 0x03, 0x5C]))
 
     def test_builds_segment_data_frames_with_zero_padding(self):
         protocol = IapProtocol(target_id=0x19, can_id=0x7FF)
@@ -54,14 +61,14 @@ class IapProtocolTests(unittest.TestCase):
 
         self.assertEqual(bytes(frame.data), bytes([0x16, 0x19, 0x08, 0x00, 0xBD, 0xC3, 0x00, 0x2A]))
 
-    def test_parses_ack_and_rejects_bad_checksum(self):
+    def test_parses_ack_and_rejects_bad_tail(self):
         protocol = IapProtocol(target_id=0x19, can_id=0x7FF)
 
-        ack = protocol.parse_ack(bytes([0x16, 0x19, 0x02, 1, 0, 0, 0, 0x32]), expected_cmd=0x02)
+        ack = protocol.parse_ack(bytes([0x16, 0x19, 0x02, 1, 0, 0, 0xE9, 0x1B]), expected_cmd=0x02)
 
-        self.assertEqual(ack, IapAck(command=0x02, params=bytes([1, 0, 0, 0])))
+        self.assertEqual(ack, IapAck(command=0x02, params=bytes([1, 0, 0, 0xE9])))
         with self.assertRaises(ValueError):
-            protocol.parse_ack(bytes([0x16, 0x19, 0x02, 1, 0, 0, 0, 0x33]), expected_cmd=0x02)
+            protocol.parse_ack(bytes([0x16, 0x19, 0x02, 1, 0, 0, 0, 0x32]), expected_cmd=0x02)
 
 
 class FirmwareImageTests(unittest.TestCase):

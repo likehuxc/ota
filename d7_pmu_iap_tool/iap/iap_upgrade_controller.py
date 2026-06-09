@@ -8,6 +8,7 @@ from typing import Callable
 from d7_pmu_iap_tool.can.can_frame import CanDriver, CanFrame
 from d7_pmu_iap_tool.iap.firmware_image import FirmwareImage
 from d7_pmu_iap_tool.iap.iap_protocol import (
+    CMD_FILL_SEGMENT_DATA,
     CMD_GET_RUN_ROLE,
     CMD_JUMP_TO_APP,
     CMD_SET_FIRMWARE_SIZE,
@@ -21,6 +22,7 @@ from d7_pmu_iap_tool.iap.iap_protocol import (
 
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[int], None]
+FrameCallback = Callable[[str, CanFrame], None]
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,8 @@ class UpgradeOptions:
     write_timeout_ms: int = 3_000
     boot_wait_ms: int = 3_000
     boot_total_wait_ms: int = 10_000
+    app_start_wait_ms: int = 1_000
+    app_total_wait_ms: int = 5_000
     data_frame_delay_ms: int = 2
     set_firmware_retries: int = 1
     set_segment_retries: int = 2
@@ -47,11 +51,13 @@ class IapUpgradeController:
         protocol: IapProtocol | None = None,
         on_log: LogCallback | None = None,
         on_progress: ProgressCallback | None = None,
+        on_frame: FrameCallback | None = None,
     ) -> None:
         self.driver = driver
         self.protocol = protocol or IapProtocol()
         self.on_log = on_log or (lambda message: None)
         self.on_progress = on_progress or (lambda percent: None)
+        self.on_frame = on_frame or (lambda direction, frame: None)
         self._cancel_event = Event()
 
     def cancel(self) -> None:
@@ -87,12 +93,16 @@ class IapUpgradeController:
             self._check_cancelled()
             self._send_segment(section.number, section.data, opts)
             sent_bytes += len(section.data)
-            percent = min(100, int(sent_bytes * 100 / image.size))
+            percent = min(99, int(sent_bytes * 100 / image.size))
             self.on_progress(percent)
 
-        self._command_with_ack(self.protocol.jump_to_app(), CMD_JUMP_TO_APP, opts.ack_timeout_ms)
+        self._send(self.protocol.jump_to_app())
+        self._sleep_with_cancel(opts.app_start_wait_ms)
+        role = self._wait_for_app(opts)
+        if role != RUN_ROLE_APP:
+            raise RuntimeError("等待 APP 启动超时")
         self.on_progress(100)
-        self._log("已发送跳转 APP 命令")
+        self._log("确认已跳转到 APP")
 
     def query_role(self, timeout_ms: int = 500) -> str:
         ack = self._command_with_ack(self.protocol.query_role(), CMD_GET_RUN_ROLE, timeout_ms)
@@ -122,6 +132,21 @@ class IapUpgradeController:
             time.sleep(0.2)
         return role
 
+    def _wait_for_app(self, options: UpgradeOptions) -> str:
+        deadline = time.monotonic() + options.app_total_wait_ms / 1000
+        role = RUN_ROLE_BOOTLOADER
+        while time.monotonic() < deadline:
+            self._check_cancelled()
+            try:
+                role = self.query_role(options.ack_timeout_ms)
+            except RuntimeError:
+                time.sleep(0.2)
+                continue
+            if role == RUN_ROLE_APP:
+                return role
+            time.sleep(0.2)
+        return role
+
     def _set_firmware_size(self, image: FirmwareImage, options: UpgradeOptions) -> None:
         self._retry_command(
             lambda: self.protocol.set_firmware_size(image.size),
@@ -141,7 +166,7 @@ class IapUpgradeController:
 
         for frame in self.protocol.segment_data_frames(section_data):
             self._check_cancelled()
-            self._send(frame)
+            self._command_with_ack(frame, CMD_FILL_SEGMENT_DATA, options.ack_timeout_ms)
             if options.data_frame_delay_ms > 0:
                 time.sleep(options.data_frame_delay_ms / 1000)
 
@@ -187,6 +212,7 @@ class IapUpgradeController:
         ack_frame = self.driver.receive(timeout_ms)
         if ack_frame is None:
             raise RuntimeError(f"等待 0x{expected_cmd:02X} ACK 超时")
+        self.on_frame("RX", ack_frame)
         try:
             return self.protocol.parse_ack(ack_frame.data, expected_cmd=expected_cmd)
         except ValueError as exc:
@@ -196,6 +222,7 @@ class IapUpgradeController:
         self._check_cancelled()
         if not self.driver.send(frame):
             raise RuntimeError(f"发送 CAN 帧失败：{self.driver.last_error}")
+        self.on_frame("TX", frame)
 
     def _check_cancelled(self) -> None:
         if self._cancel_event.is_set():

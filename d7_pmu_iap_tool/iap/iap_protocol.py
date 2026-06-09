@@ -6,6 +6,7 @@ from d7_pmu_iap_tool.can.can_frame import CanFrame
 from d7_pmu_iap_tool.iap.d7_crc32 import d7_crc32
 
 PROTOCOL_HEAD = 0x16
+PROTOCOL_TAIL = (~PROTOCOL_HEAD) & 0xFF
 
 CMD_REBOOT_TO_BOOTLOADER = 0x01
 CMD_GET_RUN_ROLE = 0x02
@@ -34,19 +35,19 @@ class IapProtocol:
         self.can_id = can_id
 
     def reboot_to_bootloader(self) -> CanFrame:
-        return self._command(CMD_REBOOT_TO_BOOTLOADER)
+        return self._tail_command(CMD_REBOOT_TO_BOOTLOADER)
 
     def query_role(self) -> CanFrame:
-        return self._command(CMD_GET_RUN_ROLE)
+        return self._tail_command(CMD_GET_RUN_ROLE)
 
     def get_software_version(self) -> CanFrame:
-        return self._command(CMD_GET_SOFT_VERSION)
+        return self._tail_command(CMD_GET_SOFT_VERSION)
 
     def set_firmware_size(self, total_size: int) -> CanFrame:
         if not 0 <= total_size <= 0xFFFFFF:
             raise ValueError("firmware size must fit in 24 bits")
-        params = bytes([(total_size >> 16) & 0xFF, (total_size >> 8) & 0xFF, total_size & 0xFF, 0])
-        return self._command(CMD_SET_FIRMWARE_SIZE, params)
+        params = bytes([(total_size >> 16) & 0xFF, (total_size >> 8) & 0xFF, total_size & 0xFF])
+        return self._tail_command(CMD_SET_FIRMWARE_SIZE, params)
 
     def set_segment_info(self, section_num: int, section_size: int) -> CanFrame:
         if not 0 <= section_num <= 0xFFFF:
@@ -59,7 +60,7 @@ class IapProtocol:
             (section_num >> 8) & 0xFF,
             section_num & 0xFF,
         ])
-        return self._command(CMD_SET_SEGMENT_INFO, params)
+        return self._checksum_command(CMD_SET_SEGMENT_INFO, params)
 
     def segment_data_frames(self, section_data: bytes) -> list[CanFrame]:
         frames: list[CanFrame] = []
@@ -91,7 +92,7 @@ class IapProtocol:
         return CanFrame(id=self.can_id, data=data)
 
     def jump_to_app(self) -> CanFrame:
-        return self._command(CMD_JUMP_TO_APP)
+        return self._tail_command(CMD_JUMP_TO_APP)
 
     def parse_ack(self, data: bytes, expected_cmd: int | None = None) -> IapAck:
         frame = bytes(data)
@@ -106,6 +107,8 @@ class IapProtocol:
         expected_checksum = checksum8(frame[:7])
         if frame[7] != expected_checksum:
             raise ValueError(f"ACK checksum mismatch: got 0x{frame[7]:02X}, expected 0x{expected_checksum:02X}")
+        if frame[2] != CMD_SET_SEGMENT_INFO and frame[6] != PROTOCOL_TAIL:
+            raise ValueError(f"ACK frame tail mismatch: got 0x{frame[6]:02X}, expected 0x{PROTOCOL_TAIL:02X}")
         return IapAck(command=frame[2], params=frame[3:7])
 
     def ack_role(self, ack: IapAck) -> str:
@@ -113,7 +116,13 @@ class IapProtocol:
             raise ValueError("ACK is not a role response")
         return RUN_ROLE_BOOTLOADER if ack.params[0] == 1 else RUN_ROLE_APP
 
-    def _command(self, command: int, params: bytes = b"\x00\x00\x00\x00") -> CanFrame:
+    def _tail_command(self, command: int, params: bytes = b"\x00\x00\x00") -> CanFrame:
+        if len(params) != 3:
+            raise ValueError("IAP tail command params must be exactly 3 bytes")
+        data = bytes([PROTOCOL_HEAD, self.target_id, command]) + params + bytes([PROTOCOL_TAIL])
+        return CanFrame(id=self.can_id, data=data + bytes([checksum8(data)]))
+
+    def _checksum_command(self, command: int, params: bytes = b"\x00\x00\x00\x00") -> CanFrame:
         if len(params) != 4:
             raise ValueError("IAP command params must be exactly 4 bytes")
         data = bytes([PROTOCOL_HEAD, self.target_id, command]) + params
