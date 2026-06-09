@@ -4,10 +4,11 @@ from __future__ import annotations
 import csv
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QPoint, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStyle,
     QTableWidget,
@@ -89,6 +91,10 @@ class Widget(QWidget):
         self.can_filter_buttons: dict[int, QPushButton] = {}
         self._can_records: list[tuple[str, str, CanFrame]] = []
         self._rx_save_records: list[tuple[str, CanFrame]] = []
+        self._can_display_paused = False
+        self.selected_dll_path = DEFAULT_DLL_PATH
+        self._upgrade_started_at: float | None = None
+        self._monotonic = time.monotonic
 
         self.can_poll_timer = QTimer(self)
         self.can_poll_timer.setInterval(80)
@@ -102,29 +108,68 @@ class Widget(QWidget):
     def _build_ui(self) -> None:
         style = self.style()
 
+        self.app_icon_label = QLabel("IAP")
+        self.app_icon_label.setObjectName("AppIcon")
         self.title_label = QLabel("D7 PMU CAN IAP")
         self.title_label.setObjectName("TitleLabel")
-        self.fixed_device_label = QLabel("固定设备：USBCAN-I · Index 0")
-        self.fixed_device_label.setObjectName("FixedDeviceLabel")
-        self.can_status_dot = QLabel("●")
-        self.can_status_dot.setFixedWidth(18)
+        self.subtitle_label = QLabel("固件升级工具 · 现代流程引导版")
+        self.subtitle_label.setObjectName("SubtitleLabel")
+        self.fixed_device_label = QLabel("USBCAN-I · Index 0")
+        self.fixed_device_label.setObjectName("SummaryValue")
+        self.can_status_dot = QLabel()
+        self.can_status_dot.setObjectName("StatusDot")
+        self.can_status_dot.setFixedSize(10, 10)
         self.can_status_label = QLabel()
         self.can_status_label.setObjectName("StatusLabel")
 
+        title_text_layout = QVBoxLayout()
+        title_text_layout.setContentsMargins(0, 0, 0, 0)
+        title_text_layout.setSpacing(3)
+        title_text_layout.addWidget(self.title_label)
+        title_text_layout.addWidget(self.subtitle_label)
+
+        self.status_pill = QWidget()
+        self.status_pill.setObjectName("StatusPill")
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(12, 7, 12, 7)
+        status_layout.setSpacing(8)
+        status_layout.addWidget(self.can_status_dot)
+        status_layout.addWidget(self.can_status_label)
+        self.status_pill.setLayout(status_layout)
+
         title_layout = QHBoxLayout()
-        title_layout.setContentsMargins(16, 12, 16, 12)
-        title_layout.addWidget(self.title_label)
-        title_layout.addWidget(self.fixed_device_label)
+        title_layout.setContentsMargins(24, 14, 24, 14)
+        title_layout.setSpacing(14)
+        title_layout.addWidget(self.app_icon_label)
+        title_layout.addLayout(title_text_layout)
         title_layout.addStretch(1)
-        title_layout.addWidget(self.can_status_dot)
-        title_layout.addWidget(self.can_status_label)
+        title_layout.addWidget(self.status_pill)
         self.header_bar = QWidget()
         self.header_bar.setObjectName("HeaderBar")
         self.header_bar.setLayout(title_layout)
 
+        self.step_title_labels: list[QLabel] = []
+        self.step_desc_labels: list[QLabel] = []
+        self.step_number_labels: list[QLabel] = []
+        self.step_widgets: list[QWidget] = []
+        stepper_layout = QHBoxLayout()
+        stepper_layout.setContentsMargins(16, 14, 16, 14)
+        stepper_layout.setSpacing(10)
+        for number, title, desc in (
+            ("1", "连接设备", "等待打开"),
+            ("2", "选择固件", "等待读取"),
+            ("3", "查询角色", "等待查询"),
+            ("4", "升级写入", "等待开始"),
+            ("5", "完成校验", "等待完成"),
+        ):
+            stepper_layout.addWidget(self._make_step(number, title, desc, "StepPending"), 1)
+        self.stepper = QWidget()
+        self.stepper.setObjectName("Stepper")
+        self.stepper.setLayout(stepper_layout)
+
         self.dll_path_label = QLabel(str(DEFAULT_DLL_PATH))
         self.dll_path_label.setWordWrap(True)
-        self.dll_path_label.setObjectName("MutedLabel")
+        self.dll_path_label.setObjectName("SummaryValue")
 
         self.channel_input = QComboBox()
         self.channel_input.addItem("CH0", 0)
@@ -138,37 +183,46 @@ class Widget(QWidget):
         self.can_id_input = QLineEdit("0x7ff")
 
         conn_layout = QGridLayout()
-        conn_layout.setHorizontalSpacing(10)
-        conn_layout.setVerticalSpacing(7)
+        conn_layout.setContentsMargins(16, 18, 16, 16)
+        conn_layout.setHorizontalSpacing(12)
+        conn_layout.setVerticalSpacing(10)
         self._add_labeled_widget(conn_layout, 0, "通道", self.channel_input)
         self._add_labeled_widget(conn_layout, 1, "波特率", self.baudrate_input)
         self._add_labeled_widget(conn_layout, 2, "目标 ID", self.target_id_input)
         self._add_labeled_widget(conn_layout, 3, "IAP CAN ID", self.can_id_input)
 
-        self.open_button = QPushButton("打开")
+        self.open_button = QPushButton("打开设备")
         self.open_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
-        self.close_button = QPushButton("关闭")
+        self.close_button = QPushButton("关闭设备")
+        self.close_button.setObjectName("DangerButton")
         self.close_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
-        conn_layout.addWidget(self.open_button, 0, 8)
-        conn_layout.addWidget(self.close_button, 1, 8)
-        conn_layout.setColumnStretch(7, 1)
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 8, 0, 0)
+        button_row.setSpacing(10)
+        button_row.addWidget(self.open_button)
+        button_row.addWidget(self.close_button)
+        button_row.addStretch(1)
+        hint_label = QLabel("升级过程中配置项会自动锁定，避免误操作")
+        hint_label.setObjectName("MutedLabel")
+        button_row.addWidget(hint_label)
+        conn_layout.addLayout(button_row, 2, 0, 1, 8)
 
-        self.conn_group = QGroupBox("连接")
-        self.conn_group.setLayout(conn_layout)
+        self.conn_group = QGroupBox("设备连接")
+        self._set_card_layout(self.conn_group, conn_layout)
 
         self.bin_path_input = QLineEdit()
         self.bin_path_input.setPlaceholderText("请选择 APP bin 固件")
-        self.bin_browse_button = QPushButton("选择")
+        self.bin_browse_button = QPushButton("选择固件")
         self.bin_browse_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
         self.bin_browse_button.setToolTip("选择 APP bin")
 
         file_layout = QGridLayout()
-        file_layout.setHorizontalSpacing(10)
+        file_layout.setContentsMargins(16, 18, 16, 16)
+        file_layout.setHorizontalSpacing(12)
+        file_layout.setVerticalSpacing(12)
         file_layout.addWidget(QLabel("APP 固件"), 0, 0)
         file_layout.addWidget(self.bin_path_input, 0, 1)
         file_layout.addWidget(self.bin_browse_button, 0, 2)
-        file_layout.addWidget(QLabel("默认 DLL"), 1, 0)
-        file_layout.addWidget(self.dll_path_label, 1, 1, 1, 2)
 
         self.firmware_size_value = QLabel("-")
         self.firmware_sp_value = QLabel("-")
@@ -182,47 +236,99 @@ class Widget(QWidget):
         ):
             value.setObjectName("MetricValue")
 
-        file_layout.addWidget(self._metric("Size", self.firmware_size_value), 2, 0)
-        file_layout.addWidget(self._metric("Image", self.firmware_image_value), 2, 1)
-        file_layout.addWidget(self._metric("Initial SP", self.firmware_sp_value), 3, 0)
-        file_layout.addWidget(self._metric("Reset Vector", self.firmware_reset_value), 3, 1)
+        self.firmware_metric_title_labels: list[QLabel] = []
+        file_layout.addWidget(self._metric("Size", self.firmware_size_value, self.firmware_metric_title_labels), 1, 0)
+        file_layout.setColumnStretch(1, 1)
 
-        file_group = QGroupBox("APP 固件")
-        file_group.setLayout(file_layout)
+        self.file_group = QGroupBox("固件文件")
+        self._set_card_layout(self.file_group, file_layout)
 
-        self.query_role_button = QPushButton("查询角色")
+        self.query_role_button = QPushButton("重新查询角色")
+        self.query_role_button.setObjectName("SecondaryButton")
         self.start_upgrade_button = QPushButton("开始升级")
         self.start_upgrade_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.stop_button = QPushButton("停止")
+        self.stop_button = QPushButton("停止升级")
+        self.stop_button.setObjectName("SecondaryButton")
         self.stop_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop))
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.upgrade_elapsed_value = QLabel("--:--:--.---")
+        self.upgrade_elapsed_value.setObjectName("MetricValue")
+
+        self.role_value_label = QLabel("APP")
+        self.role_value_label.setObjectName("RoleValue")
+        role_title_label = QLabel("当前设备角色")
+        role_title_label.setObjectName("MutedLabel")
+        role_text_layout = QVBoxLayout()
+        role_text_layout.setContentsMargins(0, 0, 0, 0)
+        role_text_layout.setSpacing(4)
+        role_text_layout.addWidget(role_title_label)
+        role_text_layout.addWidget(self.role_value_label)
+        self.role_band = QWidget()
+        self.role_band.setObjectName("RoleBand")
+        role_layout = QHBoxLayout()
+        role_layout.setContentsMargins(14, 12, 14, 12)
+        role_layout.addLayout(role_text_layout)
+        role_layout.addStretch(1)
+        role_layout.addWidget(self.query_role_button)
+        self.role_band.setLayout(role_layout)
+
+        progress_title = QLabel("写入进度")
+        progress_title.setObjectName("SectionLabel")
+        self.error_title_label = QLabel()
+        self.error_title_label.setObjectName("ErrorTitle")
+        self.error_text_label = QLabel()
+        self.error_text_label.setObjectName("ErrorText")
+        self.error_text_label.setWordWrap(True)
+        error_layout = QVBoxLayout()
+        error_layout.setContentsMargins(12, 10, 12, 10)
+        error_layout.setSpacing(5)
+        error_layout.addWidget(self.error_title_label)
+        error_layout.addWidget(self.error_text_label)
+        self.error_box = QWidget()
+        self.error_box.setObjectName("ErrorBox")
+        self.error_box.setLayout(error_layout)
+        self.error_box.hide()
 
         upgrade_actions = QHBoxLayout()
-        upgrade_actions.addWidget(self.query_role_button)
         upgrade_actions.addWidget(self.start_upgrade_button)
         upgrade_actions.addWidget(self.stop_button)
+        upgrade_actions.addStretch(1)
+        upgrade_layout = QVBoxLayout()
+        upgrade_layout.setContentsMargins(16, 18, 16, 16)
+        upgrade_layout.setSpacing(12)
+        upgrade_layout.addWidget(self.role_band)
+        upgrade_layout.addWidget(progress_title)
+        upgrade_layout.addWidget(self.progress_bar)
+        upgrade_layout.addWidget(self._metric("升级耗时", self.upgrade_elapsed_value))
+        upgrade_layout.addWidget(self.error_box)
+        upgrade_layout.addLayout(upgrade_actions)
+        self.upgrade_group = QGroupBox("升级控制")
+        self._set_card_layout(self.upgrade_group, upgrade_layout)
 
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setObjectName("LogOutput")
-        self.system_log_group = QGroupBox("系统输出")
+        self.system_log_group = QGroupBox("系统日志")
         system_log_layout = QVBoxLayout()
+        system_log_layout.setContentsMargins(16, 18, 16, 16)
         system_log_layout.addWidget(self.log_output)
-        self.system_log_group.setLayout(system_log_layout)
+        self._set_card_layout(self.system_log_group, system_log_layout)
 
         left_layout = QVBoxLayout()
-        left_layout.addWidget(file_group)
-        left_layout.addWidget(self.progress_bar)
-        left_layout.addLayout(upgrade_actions)
-        left_layout.addWidget(self.system_log_group, 1)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(16)
+        left_layout.addWidget(self.conn_group)
+        left_layout.addWidget(self.file_group)
+        left_layout.addWidget(self.upgrade_group)
+        left_layout.addStretch(1)
         self.left_panel = QWidget()
         self.left_panel.setObjectName("LeftPanel")
         self.left_panel.setLayout(left_layout)
-        self.left_panel.setMinimumWidth(360)
-        self.left_panel.setMaximumWidth(430)
+        self.left_panel.setMinimumWidth(520)
 
         self.send_can_id_input = QLineEdit("0x7ff")
         self.send_can_id_input.setFixedWidth(130)
@@ -232,22 +338,40 @@ class Widget(QWidget):
         self.clear_can_button = QPushButton("清空")
         self.clear_can_button.setObjectName("SecondaryButton")
 
-        send_layout = QGridLayout()
-        send_layout.setHorizontalSpacing(10)
-        send_layout.addWidget(QLabel("CAN ID"), 0, 0)
-        send_layout.addWidget(QLabel("Data hex"), 0, 1)
-        send_layout.addWidget(self.send_can_id_input, 1, 0)
-        send_layout.addWidget(self.send_data_input, 1, 1)
-        send_layout.addWidget(self.send_button, 1, 2)
-        send_layout.addWidget(self.clear_can_button, 1, 3)
-        send_layout.setColumnMinimumWidth(0, 120)
-        send_layout.setColumnStretch(0, 0)
-        send_layout.setColumnStretch(1, 1)
-        send_layout.setColumnStretch(2, 0)
-        send_layout.setColumnStretch(3, 0)
-        self.send_group = QGroupBox("CAN 发送")
-        self.send_group.setLayout(send_layout)
-        conn_layout.addWidget(self.send_group, 0, 7, 2, 1)
+        self.send_form_layout = QGridLayout()
+        self.send_form_layout.setContentsMargins(16, 18, 16, 16)
+        self.send_form_layout.setHorizontalSpacing(10)
+        self.send_form_layout.setVerticalSpacing(8)
+        self.send_form_layout.addWidget(QLabel("CAN ID"), 0, 0)
+        self.send_form_layout.addWidget(QLabel("Data hex"), 0, 1)
+        self.send_form_layout.addWidget(self.send_can_id_input, 1, 0)
+        self.send_form_layout.addWidget(self.send_data_input, 1, 1)
+        self.send_form_layout.addWidget(self.send_button, 1, 2)
+        self.send_form_layout.addWidget(self.clear_can_button, 1, 3)
+        self.send_form_layout.setColumnMinimumWidth(0, 120)
+        self.send_form_layout.setColumnStretch(0, 0)
+        self.send_form_layout.setColumnStretch(1, 1)
+        self.send_form_layout.setColumnStretch(2, 0)
+        self.send_form_layout.setColumnStretch(3, 0)
+        self.send_group = QGroupBox("CAN 发送调试")
+        self._set_card_layout(self.send_group, self.send_form_layout)
+
+        self.rx_count_value = QLabel("0 帧")
+        self.rx_count_value.setObjectName("SummaryValue")
+        self.dll_config_value = QLabel("使用默认 zlgcan.dll")
+        self.dll_config_value.setObjectName("SummaryValue")
+        self.dll_browse_button = QPushButton("选择 DLL")
+        self.dll_browse_button.setObjectName("SecondaryButton")
+        device_status_layout = QGridLayout()
+        device_status_layout.setContentsMargins(16, 18, 16, 16)
+        device_status_layout.setHorizontalSpacing(12)
+        device_status_layout.setVerticalSpacing(12)
+        device_status_layout.addWidget(self._summary_item("固定设备", self.fixed_device_label), 0, 0)
+        device_status_layout.addWidget(self._summary_item("接收帧数", self.rx_count_value), 0, 1)
+        device_status_layout.addWidget(self._summary_item("当前 DLL", self.dll_path_label), 1, 0)
+        device_status_layout.addWidget(self._dll_config_item(), 1, 1)
+        self.device_status_group = QGroupBox("设备状态")
+        self._set_card_layout(self.device_status_group, device_status_layout)
 
         self.can_table = QTableWidget(0, 5)
         self.can_table.setHorizontalHeaderLabels(["方向", "时间", "CANID", "Len", "Data"])
@@ -263,14 +387,14 @@ class Widget(QWidget):
         self.can_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.can_filter_input = QLineEdit()
-        self.can_filter_input.setPlaceholderText("输入 CANID，例如：0x41, 0x7FF")
+        self.can_filter_input.setPlaceholderText("过滤 CAN ID：0x41, 0x7FF")
         self.can_filter_input.setObjectName("FilterInput")
         self.apply_filter_button = QPushButton("应用")
-        self.clear_filter_button = QPushButton("全部")
-        self.clear_filter_button.setObjectName("SecondaryButton")
-        self.save_rx_button = QPushButton("保存接收")
+        self.pause_can_display_button = QPushButton("暂停显示")
+        self.pause_can_display_button.setObjectName("SecondaryButton")
+        self.save_rx_button = QPushButton("导出 CSV")
         self.save_rx_button.setObjectName("SecondaryButton")
-        self.can_filter_status_label = QLabel("全部显示")
+        self.can_filter_status_label = QLabel("显示 0 / 0 帧")
         self.can_filter_status_label.setObjectName("MutedLabel")
         self.filter_chip_bar = QWidget()
         self.filter_chip_bar.setObjectName("FilterChipBar")
@@ -280,12 +404,12 @@ class Widget(QWidget):
         self.filter_chip_bar.setLayout(self.filter_chip_layout)
 
         filter_layout = QGridLayout()
+        filter_layout.setContentsMargins(0, 0, 0, 0)
         filter_layout.setHorizontalSpacing(8)
         filter_layout.setVerticalSpacing(6)
-        filter_layout.addWidget(QLabel("过滤 CANID"), 0, 0)
         filter_layout.addWidget(self.can_filter_input, 1, 0)
         filter_layout.addWidget(self.apply_filter_button, 1, 1)
-        filter_layout.addWidget(self.clear_filter_button, 1, 2)
+        filter_layout.addWidget(self.pause_can_display_button, 1, 2)
         filter_layout.addWidget(self.can_filter_status_label, 1, 3)
         filter_layout.addWidget(self.save_rx_button, 1, 4)
         filter_layout.addWidget(self.filter_chip_bar, 2, 0, 1, 5)
@@ -294,29 +418,61 @@ class Widget(QWidget):
         self.can_filter_panel.setObjectName("CanFilterPanel")
         self.can_filter_panel.setLayout(filter_layout)
 
-        self.can_group = QGroupBox("CAN 数据")
-        self.can_group.setLayout(QVBoxLayout())
-        self.can_group.layout().addWidget(self.can_filter_panel)
-        self.can_group.layout().addWidget(self.can_table)
+        tabs_layout = QHBoxLayout()
+        tabs_layout.setContentsMargins(0, 0, 0, 0)
+        tabs_layout.setSpacing(8)
+        for index, text in enumerate(("接收数据", "发送数据", "错误帧")):
+            tab = QLabel(text)
+            tab.setObjectName("TabActive" if index == 0 else "Tab")
+            tabs_layout.addWidget(tab)
+        tabs_layout.addStretch(1)
+
+        can_group_layout = QVBoxLayout()
+        can_group_layout.setContentsMargins(16, 18, 16, 16)
+        can_group_layout.setSpacing(12)
+        can_group_layout.addLayout(tabs_layout)
+        can_group_layout.addWidget(self.can_filter_panel)
+        can_group_layout.addWidget(self.can_table, 1)
+        self.can_group = QGroupBox("CAN 监控")
+        self._set_card_layout(self.can_group, can_group_layout)
 
         right_layout = QVBoxLayout()
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(16)
+        right_layout.addWidget(self.device_status_group)
+        right_layout.addWidget(self.send_group)
         right_layout.addWidget(self.can_group, 1)
         self.right_panel = QWidget()
         self.right_panel.setObjectName("RightPanel")
         self.right_panel.setLayout(right_layout)
 
-        content_layout = QHBoxLayout()
-        content_layout.setContentsMargins(14, 14, 14, 14)
-        content_layout.setSpacing(14)
-        content_layout.addWidget(self.left_panel)
-        content_layout.addWidget(self.right_panel, 1)
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(18)
+        main_layout.addWidget(self.left_panel, 1)
+        main_layout.addWidget(self.right_panel, 1)
+
+        content = QWidget()
+        content.setObjectName("Content")
+        content.setMinimumSize(1050, 900)
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(22, 20, 22, 22)
+        content_layout.setSpacing(18)
+        content_layout.addWidget(self.stepper)
+        content_layout.addLayout(main_layout, 1)
+        content_layout.addWidget(self.system_log_group)
+        content.setLayout(content_layout)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("MainScrollArea")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidget(content)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.header_bar)
-        layout.addWidget(self.conn_group)
-        layout.addLayout(content_layout, 1)
+        layout.addWidget(self.scroll_area, 1)
 
     def _connect_signals(self) -> None:
         self.bin_browse_button.clicked.connect(self._choose_bin)
@@ -325,139 +481,351 @@ class Widget(QWidget):
         self.query_role_button.clicked.connect(self.query_role)
         self.start_upgrade_button.clicked.connect(self.start_upgrade)
         self.stop_button.clicked.connect(self.stop_upgrade)
+        self.dll_browse_button.clicked.connect(self._choose_dll)
         self.send_button.clicked.connect(self.send_can_frame)
         self.clear_can_button.clicked.connect(self.clear_can_frames)
         self.apply_filter_button.clicked.connect(self.apply_can_filter)
-        self.clear_filter_button.clicked.connect(self.clear_can_filter)
+        self.pause_can_display_button.clicked.connect(self.toggle_can_display_pause)
         self.save_rx_button.clicked.connect(self.save_rx_can_records)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
             """
             QWidget {
-                background: #eef3f1;
-                color: #15231f;
+                background: #f4f7fb;
+                color: #111827;
                 font-family: "Microsoft YaHei UI", "Segoe UI";
                 font-size: 13px;
             }
-            #TitleLabel {
-                color: #f4fbf8;
-                font-size: 20px;
-                font-weight: 700;
-                background: transparent;
-            }
-            #FixedDeviceLabel, #StatusLabel {
-                color: #c7d8d3;
-                background: transparent;
+            QWidget#Content {
+                background: #f4f7fb;
             }
             QWidget#HeaderBar {
-                background: #14211e;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0f172a, stop:1 #0b3b4a);
+            }
+            QLabel#AppIcon {
+                min-width: 40px;
+                min-height: 40px;
+                max-width: 40px;
+                max-height: 40px;
+                border-radius: 11px;
+                border: 1px solid rgba(255, 255, 255, 64);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2f6df6, stop:0.45 #15a8df, stop:1 #10b981);
+                color: #ffffff;
+                font-weight: 900;
+                qproperty-alignment: AlignCenter;
+            }
+            #TitleLabel {
+                color: #f4fbf8;
+                font-size: 23px;
+                font-weight: 800;
+                background: transparent;
+            }
+            #SubtitleLabel {
+                color: #cbd5e1;
+                font-size: 12px;
+                background: transparent;
+            }
+            QWidget#StatusPill {
+                background: rgba(255, 255, 255, 26);
+                border: 1px solid rgba(255, 255, 255, 42);
+                border-radius: 16px;
+            }
+            QLabel#StatusLabel {
+                color: #f8fafc;
+                background: transparent;
+                font-weight: 700;
+            }
+            QLabel#StatusDot {
+                border-radius: 5px;
+                background: #22c55e;
+            }
+            QWidget#Stepper {
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+            }
+            QWidget#StepPending, QWidget#StepDone, QWidget#StepActive {
+                border-radius: 12px;
+                border: 1px solid #edf0f4;
+                background: #f9fafb;
+            }
+            QWidget#StepDone {
+                background: #ecfdf5;
+                border-color: #bbf7d0;
+            }
+            QWidget#StepActive {
+                background: #fef2f2;
+                border-color: #fecaca;
+            }
+            QLabel#StepNumberPending, QLabel#StepNumberDone, QLabel#StepNumberActive {
+                min-width: 28px;
+                min-height: 28px;
+                max-width: 28px;
+                max-height: 28px;
+                border-radius: 14px;
+                color: #ffffff;
+                background: #9ca3af;
+                font-weight: 800;
+                qproperty-alignment: AlignCenter;
+            }
+            QLabel#StepNumberDone {
+                background: #16a34a;
+            }
+            QLabel#StepNumberActive {
+                background: #dc2626;
+            }
+            QLabel#StepTitle {
+                background: transparent;
+                color: #111827;
+                font-size: 13px;
+                font-weight: 800;
+            }
+            QLabel#StepDesc {
+                background: transparent;
+                color: #6b7280;
+                font-size: 12px;
             }
             QGroupBox {
-                border: 1px solid #d2dfdb;
-                margin-top: 12px;
-                padding: 12px;
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+                margin-top: 0;
                 background: #ffffff;
-                font-weight: 700;
             }
             QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 6px;
-                color: #263733;
+                color: transparent;
+                height: 0;
+                padding: 0;
+                margin: 0;
+            }
+            QWidget#CardHeader {
+                background: transparent;
+                border-bottom: 1px solid #f1f5f9;
+            }
+            QLabel#CardMark {
+                min-width: 4px;
+                max-width: 4px;
+                min-height: 18px;
+                max-height: 18px;
+                border-radius: 2px;
+                background: #2563eb;
+            }
+            QLabel#CardTitle {
+                color: #111827;
+                background: transparent;
+                font-size: 16px;
+                font-weight: 900;
             }
             QLineEdit, QComboBox {
-                min-height: 30px;
-                border: 1px solid #cbd8d4;
+                min-height: 32px;
+                border: 1px solid #d1d5db;
+                border-radius: 9px;
                 background: #ffffff;
-                padding: 4px 8px;
-                selection-background-color: #1f6feb;
+                padding: 3px 10px;
+                color: #1f2937;
+                font-weight: 600;
+                selection-background-color: #2563eb;
             }
             QLineEdit:focus, QComboBox:focus {
-                border-color: #1f6feb;
+                border-color: #2563eb;
+            }
+            QComboBox {
+                min-width: 118px;
+                padding-left: 12px;
+                padding-right: 34px;
+                font-weight: 800;
+            }
+            QComboBox:hover {
+                border-color: #bfdbfe;
+                background: #ffffff;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 30px;
+                margin: 1px;
+                border: 0;
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+                background: #f8fafc;
+            }
+            QComboBox::drop-down:hover {
+                background: #eff6ff;
+            }
+            QComboBox::down-arrow {
+                image: url(assets/chevron-down.svg);
+                width: 12px;
+                height: 12px;
+            }
+            QComboBox QAbstractItemView {
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                background: #ffffff;
+                color: #111827;
+                selection-background-color: #eff6ff;
+                selection-color: #2563eb;
+                padding: 4px;
+                outline: 0;
             }
             QPushButton {
-                min-height: 31px;
-                border: 1px solid #0b704d;
-                background: #0b704d;
+                min-height: 32px;
+                border: 1px solid #2563eb;
+                border-radius: 9px;
+                background: #2563eb;
                 color: #ffffff;
                 padding: 4px 12px;
-                font-weight: 700;
+                font-weight: 800;
             }
             QPushButton:disabled {
-                background: #d7e0dd;
-                border-color: #c4d0cc;
-                color: #7b8b86;
+                background: #e5e7eb;
+                border-color: #e5e7eb;
+                color: #9ca3af;
             }
             QPushButton#SecondaryButton {
+                background: #f8fafc;
+                color: #334155;
+                border-color: #d1d5db;
+            }
+            QPushButton#DangerButton {
                 background: #ffffff;
-                color: #20312d;
-                border-color: #cbd8d4;
+                color: #dc2626;
+                border-color: #fecaca;
             }
             QPushButton#FilterChip {
                 min-height: 25px;
-                border: 1px solid #cbd8d4;
+                border: 1px solid #d1d5db;
+                border-radius: 12px;
                 background: #ffffff;
-                color: #20312d;
+                color: #334155;
                 padding: 2px 9px;
                 font-family: "Cascadia Mono", Consolas;
-                font-weight: 700;
+                font-weight: 800;
             }
             QPushButton#FilterChip:checked {
-                border-color: #18a56f;
-                background: #dff3eb;
-                color: #0b704d;
+                border-color: #bfdbfe;
+                background: #eff6ff;
+                color: #2563eb;
             }
             QWidget#CanFilterPanel {
-                background: #f7faf9;
-                border: 1px solid #dce5e2;
+                background: transparent;
             }
             QWidget#FilterChipBar {
                 background: transparent;
             }
-            QLabel#MutedLabel {
-                color: #65746f;
+            QLabel#MutedLabel, QLabel#SummaryLabel {
+                color: #6b7280;
+                background: transparent;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QLabel#SectionLabel {
+                color: #111827;
+                background: transparent;
+                font-weight: 800;
+            }
+            QLabel#SummaryValue {
+                color: #0f172a;
+                background: transparent;
+                font-weight: 900;
             }
             QLabel#MetricValue {
                 font-family: "Cascadia Mono", Consolas;
                 font-size: 14px;
-                color: #13201d;
+                color: #0f172a;
+                background: transparent;
+                font-weight: 800;
             }
-            QWidget#Metric {
-                background: #f7faf9;
-                border: 1px solid #dce5e2;
+            QWidget#Metric, QWidget#SummaryItem {
+                background: #f8fafc;
+                border: 1px solid #edf2f7;
+                border-radius: 11px;
+            }
+            QWidget#RoleBand {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #eff6ff, stop:1 #f8fafc);
+                border: 1px solid #dbeafe;
+                border-radius: 13px;
+            }
+            QLabel#RoleValue {
+                color: #1e3a8a;
+                background: transparent;
+                font-size: 24px;
+                font-weight: 900;
+            }
+            QWidget#ErrorBox {
+                background: #fef2f2;
+                border: 1px solid #fecaca;
+                border-radius: 12px;
+            }
+            QLabel#ErrorTitle {
+                color: #dc2626;
+                background: transparent;
+                font-weight: 900;
+            }
+            QLabel#ErrorText {
+                color: #7f1d1d;
+                background: transparent;
+                font-size: 13px;
+            }
+            QLabel#Tab, QLabel#TabActive {
+                min-height: 30px;
+                border-radius: 15px;
+                padding: 0 12px;
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                color: #64748b;
+                font-size: 12px;
+                font-weight: 800;
+                qproperty-alignment: AlignCenter;
+            }
+            QLabel#TabActive {
+                background: #eff6ff;
+                border-color: #bfdbfe;
+                color: #2563eb;
             }
             QProgressBar {
-                height: 12px;
+                height: 14px;
                 border: 0;
-                background: #dce6e2;
+                border-radius: 7px;
+                background: #e5e7eb;
                 text-align: center;
+                color: #0f172a;
+                font-weight: 800;
             }
             QProgressBar::chunk {
-                background: #18a56f;
+                border-radius: 7px;
+                background: #16a34a;
             }
             QTableWidget {
                 background: #ffffff;
-                alternate-background-color: #f7faf9;
-                border: 1px solid #d2dfdb;
-                gridline-color: #edf2f0;
+                alternate-background-color: #f8fafc;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                gridline-color: #f1f5f9;
                 font-family: "Cascadia Mono", Consolas;
             }
             QHeaderView::section {
-                background: #eaf1ef;
-                color: #596965;
+                background: #f8fafc;
+                color: #475569;
                 border: 0;
-                border-bottom: 1px solid #d2dfdb;
+                border-bottom: 1px solid #e5e7eb;
                 padding: 7px;
-                font-weight: 700;
+                font-weight: 900;
             }
             QPlainTextEdit#LogOutput {
                 min-height: 110px;
                 max-height: 150px;
-                background: #10201c;
-                color: #c7f4df;
-                border: 1px solid #cbd8d4;
+                background: #0b1220;
+                color: #dbeafe;
+                border: 0;
+                border-radius: 10px;
                 font-family: "Cascadia Mono", Consolas;
+            }
+            QScrollArea#MainScrollArea {
+                border: 0;
+                background: #f4f7fb;
+            }
+            QScrollArea#MainScrollArea > QWidget > QWidget {
+                background: #f4f7fb;
             }
             """
         )
@@ -469,10 +837,44 @@ class Widget(QWidget):
         layout.addWidget(label, 0, column * 2)
         layout.addWidget(widget, 1, column * 2)
 
+    def _set_card_layout(self, group: QGroupBox, body_layout) -> None:
+        header = self._card_header(group.title())
+        body = QWidget()
+        body.setObjectName("CardBody")
+        body.setLayout(body_layout)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(header)
+        layout.addWidget(body)
+        group.setLayout(layout)
+
     @staticmethod
-    def _metric(title: str, value: QLabel) -> QWidget:
+    def _card_header(title: str) -> QWidget:
+        mark = QLabel()
+        mark.setObjectName("CardMark")
+        title_label = QLabel(title)
+        title_label.setObjectName("CardTitle")
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(16, 12, 16, 10)
+        layout.setSpacing(9)
+        layout.addWidget(mark)
+        layout.addWidget(title_label)
+        layout.addStretch(1)
+
+        header = QWidget()
+        header.setObjectName("CardHeader")
+        header.setLayout(layout)
+        return header
+
+    @staticmethod
+    def _metric(title: str, value: QLabel, title_store: list[QLabel] | None = None) -> QWidget:
         title_label = QLabel(title)
         title_label.setObjectName("MutedLabel")
+        if title_store is not None:
+            title_store.append(title_label)
         metric_layout = QVBoxLayout()
         metric_layout.setContentsMargins(8, 6, 8, 6)
         metric_layout.addWidget(title_label)
@@ -482,12 +884,134 @@ class Widget(QWidget):
         metric.setObjectName("Metric")
         return metric
 
+    def _make_step(self, number: str, title: str, desc: str, state: str) -> QWidget:
+        suffix = state.replace("Step", "")
+        number_label = QLabel(number)
+        number_label.setObjectName(f"StepNumber{suffix}")
+        title_label = QLabel(title)
+        title_label.setObjectName("StepTitle")
+        desc_label = QLabel(desc)
+        desc_label.setObjectName("StepDesc")
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2)
+        text_layout.addWidget(title_label)
+        text_layout.addWidget(desc_label)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(10, 9, 10, 9)
+        layout.setSpacing(10)
+        layout.addWidget(number_label)
+        layout.addLayout(text_layout)
+
+        step = QWidget()
+        step.setObjectName(state)
+        step.setLayout(layout)
+        self.step_title_labels.append(title_label)
+        self.step_desc_labels.append(desc_label)
+        self.step_number_labels.append(number_label)
+        self.step_widgets.append(step)
+        return step
+
+    def _set_step_state(self, index: int, state: str, desc: str | None = None) -> None:
+        if not 0 <= index < len(self.step_widgets):
+            return
+        suffix = state.replace("Step", "")
+        self.step_widgets[index].setObjectName(state)
+        self.step_number_labels[index].setObjectName(f"StepNumber{suffix}")
+        if desc is not None:
+            self.step_desc_labels[index].setText(desc)
+        for widget in (self.step_widgets[index], self.step_number_labels[index]):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
+
+    def _set_device_role(self, role: str) -> None:
+        self.role_value_label.setText(role)
+        self._set_step_state(2, "StepDone", f"当前角色 {role}")
+
+    @Slot(str)
+    def _handle_upgrade_log(self, message: str) -> None:
+        self._log(message)
+        prefix = "当前角色 "
+        if message.startswith(prefix):
+            self._set_device_role(message.removeprefix(prefix).strip())
+
+    def _start_upgrade_timer(self) -> None:
+        self._upgrade_started_at = self._monotonic()
+        self.upgrade_elapsed_value.setText("计时中")
+
+    def _finish_upgrade_elapsed(self) -> str:
+        if self._upgrade_started_at is None:
+            elapsed = "00:00:00.000"
+        else:
+            elapsed = self._format_elapsed_time(max(0.0, self._monotonic() - self._upgrade_started_at))
+        self.upgrade_elapsed_value.setText(elapsed)
+        self._upgrade_started_at = None
+        return elapsed
+
+    @staticmethod
+    def _format_elapsed_time(elapsed_seconds: float) -> str:
+        total_milliseconds = int(round(elapsed_seconds * 1000))
+        milliseconds = total_milliseconds % 1000
+        total_seconds = total_milliseconds // 1000
+        seconds = total_seconds % 60
+        total_minutes = total_seconds // 60
+        minutes = total_minutes % 60
+        hours = total_minutes // 60
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+    @staticmethod
+    def _summary_item(title: str, value: QLabel) -> QWidget:
+        title_label = QLabel(title)
+        title_label.setObjectName("SummaryLabel")
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 9, 10, 9)
+        layout.setSpacing(5)
+        layout.addWidget(title_label)
+        layout.addWidget(value)
+        item = QWidget()
+        item.setObjectName("SummaryItem")
+        item.setLayout(layout)
+        return item
+
+    def _dll_config_item(self) -> QWidget:
+        title_label = QLabel("DLL 配置")
+        title_label.setObjectName("SummaryLabel")
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(self.dll_config_value, 1)
+        row.addWidget(self.dll_browse_button)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 9, 10, 9)
+        layout.setSpacing(5)
+        layout.addWidget(title_label)
+        layout.addLayout(row)
+        item = QWidget()
+        item.setObjectName("SummaryItem")
+        item.setLayout(layout)
+        return item
+
     @Slot()
     def _choose_bin(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择 APP bin", "", "Binary (*.bin);;All files (*.*)")
         if path:
             self.bin_path_input.setText(path)
             self._load_firmware_for_log(path)
+
+    @Slot()
+    def _choose_dll(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "选择 zlgcan.dll", str(self.selected_dll_path.parent), "DLL (*.dll);;All files (*.*)")
+        if path:
+            self._set_dll_path(Path(path))
+
+    def _set_dll_path(self, path: str | Path) -> None:
+        self.selected_dll_path = Path(path)
+        self.dll_path_label.setText(str(self.selected_dll_path))
+        self.dll_config_value.setText("使用默认 zlgcan.dll" if self.selected_dll_path == DEFAULT_DLL_PATH else "已选择本地 DLL")
 
     @Slot()
     def open_device(self) -> None:
@@ -529,8 +1053,9 @@ class Widget(QWidget):
         self.can_poll_timer.stop()
         try:
             driver = self._ensure_driver_open()
-            controller = IapUpgradeController(driver, self._make_protocol(), on_log=self._log, on_frame=self._append_can_frame)
-            controller.query_role()
+            controller = IapUpgradeController(driver, self._make_protocol(), on_log=self._handle_upgrade_log, on_frame=self._append_can_frame)
+            role = controller.query_role()
+            self._set_device_role(role)
         except Exception as exc:
             self._show_error(str(exc))
         finally:
@@ -540,6 +1065,9 @@ class Widget(QWidget):
     @Slot()
     def start_upgrade(self) -> None:
         try:
+            self.error_box.hide()
+            self._start_upgrade_timer()
+            self._set_step_state(3, "StepActive", "写入中")
             image = self._load_firmware()
             driver = self._ensure_driver_open()
             protocol = self._make_protocol()
@@ -551,11 +1079,11 @@ class Widget(QWidget):
             controller.on_frame = self.upgrade_worker.can_frame.emit
             self.upgrade_worker.moveToThread(self.upgrade_thread)
             self.upgrade_thread.started.connect(self.upgrade_worker.run)
-            self.upgrade_worker.log.connect(self._log)
+            self.upgrade_worker.log.connect(self._handle_upgrade_log)
             self.upgrade_worker.progress.connect(self.progress_bar.setValue)
             self.upgrade_worker.can_frame.connect(self._append_can_frame)
             self.upgrade_worker.succeeded.connect(self._upgrade_succeeded)
-            self.upgrade_worker.failed.connect(self._show_error)
+            self.upgrade_worker.failed.connect(self._upgrade_failed)
             self.upgrade_worker.finished.connect(self._upgrade_finished)
             self.upgrade_worker.finished.connect(self.upgrade_thread.quit)
             self.upgrade_worker.finished.connect(self.upgrade_worker.deleteLater)
@@ -563,7 +1091,7 @@ class Widget(QWidget):
             self._set_busy(True)
             self.upgrade_thread.start()
         except Exception as exc:
-            self._show_error(str(exc))
+            self._upgrade_failed(str(exc))
 
     @Slot()
     def stop_upgrade(self) -> None:
@@ -579,8 +1107,18 @@ class Widget(QWidget):
 
     @Slot()
     def _upgrade_succeeded(self) -> None:
-        self._log("升级成功")
-        QMessageBox.information(self, "升级成功", "升级成功，设备已跳转到 APP。")
+        self.error_box.hide()
+        self._set_step_state(3, "StepDone", "写入完成")
+        self._set_step_state(4, "StepDone", "升级成功")
+        elapsed = self._finish_upgrade_elapsed()
+        self._log(f"升级成功，耗时：{elapsed}")
+        self._show_information("升级成功", f"升级成功，设备已跳转到 APP。\n升级耗时：{elapsed}")
+
+    @Slot(str)
+    def _upgrade_failed(self, message: str) -> None:
+        elapsed = self._finish_upgrade_elapsed()
+        self._log(f"升级耗时：{elapsed}")
+        self._show_error(f"{message}\n升级耗时：{elapsed}")
 
     @Slot()
     def send_can_frame(self) -> None:
@@ -608,7 +1146,7 @@ class Widget(QWidget):
             self._append_can_frame("RX", frame)
 
     def _make_driver(self) -> ZlgCanBrokerDriver:
-        return ZlgCanBrokerDriver(DEFAULT_DLL_PATH)
+        return ZlgCanBrokerDriver(self.selected_dll_path)
 
     def _ensure_driver_open(self) -> ZlgCanBrokerDriver:
         if self.driver and self.driver.is_open():
@@ -656,6 +1194,7 @@ class Widget(QWidget):
         self.firmware_size_value.setText(f"{image.size:,} bytes")
         self.firmware_sp_value.setText(f"0x{image.initial_sp:08X}")
         self.firmware_reset_value.setText(f"0x{image.reset_vector:08X}")
+        self._set_step_state(1, "StepDone", "APP 固件已读取")
         self._log(f"固件大小：{image.size} bytes")
         self._log(f"Initial SP：0x{image.initial_sp:08X}")
         self._log(f"ResetVector：0x{image.reset_vector:08X}")
@@ -678,8 +1217,14 @@ class Widget(QWidget):
     def _set_connection_status(self, connected: bool, message: str, failed: bool = False) -> None:
         self._can_connected = connected
         self.can_status_label.setText(message)
-        color = "#18a56f" if connected else "#c7392f" if failed else "#8a9692"
-        self.can_status_dot.setStyleSheet(f"color: {color}; font-size: 16px; font-weight: bold; background: transparent;")
+        color = "#22c55e" if connected else "#dc2626" if failed else "#94a3b8"
+        self.can_status_dot.setStyleSheet(f"border-radius: 5px; background: {color};")
+        if connected:
+            self._set_step_state(0, "StepDone", "USBCAN-I 已打开")
+        elif failed:
+            self._set_step_state(0, "StepActive", "打开失败")
+        else:
+            self._set_step_state(0, "StepPending", "等待打开")
         if connected:
             self.send_can_id_input.setText(self.can_id_input.text())
         self._set_busy(False)
@@ -694,12 +1239,14 @@ class Widget(QWidget):
         self._can_records.append((direction, timestamp, frame))
         if len(self._can_records) > MAX_CAN_ROWS:
             popped_record = self._can_records.pop(0)
-        if popped_record and self._frame_passes_filter(popped_record[2]) and self.can_table.rowCount() > 0:
-            self.can_table.removeRow(0)
         self._remember_can_id(frame.id)
-        if self._frame_passes_filter(frame):
-            self._add_can_table_row(direction, timestamp, frame)
+        if not self._can_display_paused:
+            if popped_record and self._frame_passes_filter(popped_record[2]) and self.can_table.rowCount() > 0:
+                self.can_table.removeRow(0)
+            if self._frame_passes_filter(frame):
+                self._add_can_table_row(direction, timestamp, frame)
         self._update_filter_status(self.can_table.rowCount())
+        self.rx_count_value.setText(f"{len(self._rx_save_records)} 帧")
 
     def _remember_can_id(self, can_id: int) -> None:
         if can_id in self.known_can_ids:
@@ -741,14 +1288,29 @@ class Widget(QWidget):
             return
         self._sync_filter_input()
         self._refresh_filter_chips()
-        self._render_can_table()
+        if self._can_display_paused:
+            self._update_filter_status(self.can_table.rowCount())
+        else:
+            self._render_can_table()
 
     @Slot()
     def clear_can_filter(self) -> None:
         self.filter_can_ids.clear()
         self.can_filter_input.clear()
         self._refresh_filter_chips()
-        self._render_can_table()
+        if self._can_display_paused:
+            self._update_filter_status(self.can_table.rowCount())
+        else:
+            self._render_can_table()
+
+    @Slot()
+    def toggle_can_display_pause(self) -> None:
+        self._can_display_paused = not self._can_display_paused
+        self.pause_can_display_button.setText("继续显示" if self._can_display_paused else "暂停显示")
+        if self._can_display_paused:
+            self._update_filter_status(self.can_table.rowCount())
+        else:
+            self._render_can_table()
 
     @Slot()
     def clear_can_frames(self) -> None:
@@ -756,6 +1318,7 @@ class Widget(QWidget):
         self._rx_save_records.clear()
         self.can_table.setRowCount(0)
         self._update_filter_status(0)
+        self.rx_count_value.setText("0 帧")
 
     @Slot()
     def save_rx_can_records(self) -> None:
@@ -796,10 +1359,11 @@ class Widget(QWidget):
 
     def _update_filter_status(self, visible_count: int) -> None:
         total_count = len(self._can_records)
+        prefix = "暂停显示" if self._can_display_paused else "显示"
         if self.filter_can_ids:
-            self.can_filter_status_label.setText(f"显示 {visible_count} / {total_count} 帧")
+            self.can_filter_status_label.setText(f"{prefix} {visible_count} / {total_count} 帧")
         else:
-            self.can_filter_status_label.setText(f"全部显示 {total_count} 帧")
+            self.can_filter_status_label.setText(f"{prefix} {visible_count} / {total_count} 帧")
 
     def _add_can_table_row(self, direction: str, timestamp: str, frame: CanFrame) -> None:
         row = self.can_table.rowCount()
@@ -865,8 +1429,35 @@ class Widget(QWidget):
         self.log_output.appendPlainText(message)
 
     def _show_error(self, message: str) -> None:
+        self.error_title_label.setText("操作失败")
+        self.error_text_label.setText(message)
+        self.error_box.show()
+        self._set_step_state(3, "StepActive", "需要处理")
         self._log(f"错误：{message}")
         QMessageBox.warning(self, "错误", message)
+
+    def _show_information(self, title: str, message: str) -> None:
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle(title)
+        dialog.setText(message)
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.adjustSize()
+        dialog.move(self._dialog_position_for_size(dialog.width(), dialog.height()))
+        dialog.exec()
+
+    def _dialog_position_for_size(self, dialog_width: int, dialog_height: int) -> QPoint:
+        window_rect = self.frameGeometry() if self.isVisible() else self.geometry()
+        target_x = window_rect.x() + window_rect.width() // 2
+        target_y = window_rect.y() + window_rect.height() // 3
+        x = target_x - dialog_width // 2
+        y = target_y - dialog_height // 2
+        max_x = window_rect.right() - dialog_width
+        max_y = window_rect.bottom() - dialog_height
+        return QPoint(
+            max(window_rect.left(), min(x, max_x)),
+            max(window_rect.top(), min(y, max_y)),
+        )
 
     @staticmethod
     def _parse_int(text: str) -> int:

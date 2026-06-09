@@ -2,10 +2,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QScrollArea
 
 from d7_pmu_iap_tool.can.can_frame import CanFrame
 from widget import DEFAULT_DLL_PATH, MAX_CAN_ROWS, Widget
@@ -63,6 +64,35 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(widget._make_options().device_index, 0)
         self.assertEqual(widget.progress_bar.value(), 0)
 
+    def test_ui_uses_html_preview_structure_and_copy(self):
+        widget = Widget()
+
+        self.assertEqual(widget.subtitle_label.text(), "固件升级工具 · 现代流程引导版")
+        self.assertIsInstance(widget.scroll_area, QScrollArea)
+        self.assertEqual(
+            [label.text() for label in widget.step_title_labels],
+            ["连接设备", "选择固件", "查询角色", "升级写入", "完成校验"],
+        )
+        self.assertEqual(widget.conn_group.title(), "设备连接")
+        self.assertEqual(widget.file_group.title(), "固件文件")
+        self.assertEqual(widget.upgrade_group.title(), "升级控制")
+        self.assertEqual(widget.device_status_group.title(), "设备状态")
+        self.assertEqual(widget.send_group.title(), "CAN 发送调试")
+        self.assertEqual(widget.can_group.title(), "CAN 监控")
+        self.assertEqual(widget.system_log_group.title(), "系统日志")
+        self.assertEqual(widget.role_value_label.text(), "APP")
+
+    def test_firmware_card_only_shows_size_metric(self):
+        widget = Widget()
+
+        self.assertEqual([label.text() for label in widget.firmware_metric_title_labels], ["Size"])
+
+    def test_can_monitor_uses_pause_toggle_instead_of_show_all_button(self):
+        widget = Widget()
+
+        self.assertEqual(widget.pause_can_display_button.text(), "暂停显示")
+        self.assertFalse(hasattr(widget, "clear_filter_button"))
+
     def test_default_dll_path_uses_local_installation(self):
         widget = Widget()
 
@@ -70,11 +100,23 @@ class WidgetTests(unittest.TestCase):
 
         self.assertEqual(driver.dll_path, str(DEFAULT_DLL_PATH))
 
-    def test_dll_picker_is_not_shown_when_default_path_is_used(self):
+    def test_dll_picker_is_shown_but_default_path_is_used_until_changed(self):
         widget = Widget()
 
-        self.assertFalse(hasattr(widget, "dll_browse_button"))
+        self.assertEqual(widget.dll_browse_button.text(), "选择 DLL")
+        self.assertEqual(widget.dll_config_value.text(), "使用默认 zlgcan.dll")
         self.assertIn(str(DEFAULT_DLL_PATH), widget.dll_path_label.text())
+
+    def test_selected_dll_path_is_used_for_driver(self):
+        widget = Widget()
+
+        selected_path = Path(r"C:\Vendor\zlgcan.dll")
+        widget._set_dll_path(selected_path)
+        driver = widget._make_driver()
+
+        self.assertEqual(driver.dll_path, str(selected_path))
+        self.assertEqual(widget.dll_config_value.text(), "已选择本地 DLL")
+        self.assertIn(str(selected_path), widget.dll_path_label.text())
 
     def test_can_status_starts_disconnected(self):
         widget = Widget()
@@ -103,6 +145,66 @@ class WidgetTests(unittest.TestCase):
         self.assertFalse(widget.close_button.isEnabled())
         self.assertFalse(widget.query_role_button.isEnabled())
         self.assertFalse(widget.start_upgrade_button.isEnabled())
+
+    def test_query_role_updates_current_device_role_display(self):
+        widget = Widget()
+        widget.driver = FakeDriver()
+        widget._set_connection_status(True, "已打开：通道 0，1000000 bps")
+
+        with patch("widget.IapUpgradeController") as controller_cls:
+            controller_cls.return_value.query_role.return_value = "BOOT"
+            widget.query_role()
+
+        self.assertEqual(widget.role_value_label.text(), "BOOT")
+        self.assertEqual(widget.step_desc_labels[2].text(), "当前角色 BOOT")
+
+    def test_upgrade_log_current_role_updates_current_device_role_display(self):
+        widget = Widget()
+
+        widget._handle_upgrade_log("当前角色 BOOT")
+
+        self.assertEqual(widget.role_value_label.text(), "BOOT")
+
+    def test_dialog_position_is_horizontally_centered_and_one_third_down(self):
+        widget = Widget()
+        widget.setGeometry(90, 150, 900, 600)
+
+        position = widget._dialog_position_for_size(240, 120)
+
+        self.assertEqual(position.x(), 420)
+        self.assertEqual(position.y(), 290)
+
+    def test_upgrade_success_uses_positioned_information_dialog(self):
+        widget = Widget()
+        shown = []
+        widget._upgrade_started_at = 100.0
+        widget._monotonic = lambda: 165.432
+
+        widget._show_information = lambda title, message: shown.append((title, message))
+
+        with patch("widget.QMessageBox.information"):
+            widget._upgrade_succeeded()
+
+        self.assertEqual(shown, [("升级成功", "升级成功，设备已跳转到 APP。\n升级耗时：00:01:05.432")])
+        self.assertEqual(widget.upgrade_elapsed_value.text(), "00:01:05.432")
+
+    def test_upgrade_elapsed_time_is_formatted_for_hours_minutes_seconds(self):
+        widget = Widget()
+
+        self.assertEqual(widget._format_elapsed_time(3_723.045), "01:02:03.045")
+
+    def test_upgrade_failure_records_elapsed_time_in_log(self):
+        widget = Widget()
+        widget._upgrade_started_at = 10.0
+        widget._monotonic = lambda: 12.5
+        warnings = []
+        widget._show_error = lambda message: warnings.append(message)
+
+        widget._upgrade_failed("ACK 超时")
+
+        self.assertEqual(widget.upgrade_elapsed_value.text(), "00:00:02.500")
+        self.assertIn("升级耗时：00:00:02.500", widget.log_output.toPlainText())
+        self.assertEqual(warnings, ["ACK 超时\n升级耗时：00:00:02.500"])
 
     def test_received_can_frame_is_shown_in_table(self):
         widget = Widget()
@@ -135,15 +237,15 @@ class WidgetTests(unittest.TestCase):
     def test_system_log_is_in_left_panel_and_can_area_owns_the_right_panel(self):
         widget = Widget()
 
-        self.assertIs(widget.log_output.parentWidget(), widget.system_log_group)
+        self.assertTrue(widget.system_log_group.isAncestorOf(widget.log_output))
         self.assertIs(widget.can_group.parentWidget(), widget.right_panel)
-        self.assertIs(widget.send_group.parentWidget(), widget.conn_group)
-        self.assertEqual(widget.right_panel.layout().count(), 1)
+        self.assertIs(widget.send_group.parentWidget(), widget.right_panel)
+        self.assertGreaterEqual(widget.right_panel.layout().count(), 3)
 
     def test_send_data_input_column_is_the_wide_column(self):
         widget = Widget()
 
-        layout = widget.send_group.layout()
+        layout = widget.send_form_layout
 
         self.assertGreater(layout.columnStretch(1), layout.columnStretch(0))
         self.assertGreater(layout.columnStretch(1), layout.columnStretch(2))
@@ -174,6 +276,24 @@ class WidgetTests(unittest.TestCase):
 
         self.assertEqual(widget.can_table.rowCount(), 2)
         self.assertEqual(widget.filter_can_ids, set())
+
+    def test_pause_can_display_keeps_recording_but_stops_table_updates(self):
+        widget = Widget()
+        widget._append_can_frame("RX", CanFrame(id=0x41, data=b"\x01"))
+
+        widget.toggle_can_display_pause()
+        widget._append_can_frame("RX", CanFrame(id=0x42, data=b"\x02"))
+
+        self.assertEqual(widget.pause_can_display_button.text(), "继续显示")
+        self.assertEqual(widget.can_table.rowCount(), 1)
+        self.assertEqual(len(widget._can_records), 2)
+        self.assertEqual(len(widget._rx_save_records), 2)
+
+        widget.toggle_can_display_pause()
+
+        self.assertEqual(widget.pause_can_display_button.text(), "暂停显示")
+        self.assertEqual(widget.can_table.rowCount(), 2)
+        self.assertEqual(widget.can_table.item(1, 2).text(), "0x42")
 
     def test_can_filter_accepts_comma_or_space_separated_ids(self):
         widget = Widget()

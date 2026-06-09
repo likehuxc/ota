@@ -209,14 +209,21 @@ class IapUpgradeController:
 
     def _command_with_ack(self, frame: CanFrame, expected_cmd: int, timeout_ms: int) -> IapAck:
         self._send(frame)
-        ack_frame = self.driver.receive(timeout_ms)
-        if ack_frame is None:
-            raise RuntimeError(f"等待 0x{expected_cmd:02X} ACK 超时")
-        self.on_frame("RX", ack_frame)
-        try:
-            return self.protocol.parse_ack(ack_frame.data, expected_cmd=expected_cmd)
-        except ValueError as exc:
-            raise RuntimeError(str(exc)) from exc
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                raise RuntimeError(f"等待 0x{expected_cmd:02X} ACK 超时")
+            ack_frame = self.driver.receive(remaining_ms)
+            if ack_frame is None:
+                raise RuntimeError(f"等待 0x{expected_cmd:02X} ACK 超时")
+            self.on_frame("RX", ack_frame)
+            if ack_frame.id != self.protocol.can_id:
+                continue
+            try:
+                return self.protocol.parse_ack(ack_frame.data, expected_cmd=expected_cmd)
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
 
     def _send(self, frame: CanFrame) -> None:
         self._check_cancelled()
