@@ -64,10 +64,36 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(widget._make_options().device_index, 0)
         self.assertEqual(widget.progress_bar.value(), 0)
 
+    def test_device_selector_updates_target_and_iap_can_id(self):
+        widget = Widget()
+
+        labels = [widget.device_profile_input.itemText(index) for index in range(widget.device_profile_input.count())]
+        self.assertEqual(labels, ["D7-CT01", "D7-CT02", "D7-沛城电池"])
+        self.assertEqual(widget.device_profile_input.currentText(), "D7-CT02")
+        self.assertEqual(widget.target_id_input.text(), "0x19")
+        self.assertEqual(widget.can_id_input.text(), "0x7ff")
+        self.assertEqual(widget.send_can_id_input.text(), "0x7ff")
+
+        widget.device_profile_input.setCurrentIndex(widget.device_profile_input.findText("D7-CT01"))
+
+        self.assertEqual(widget.target_id_input.text(), "0x18")
+        self.assertEqual(widget.can_id_input.text(), "0x7ff")
+        self.assertEqual(widget._make_protocol().target_id, 0x18)
+        self.assertEqual(widget._make_protocol().can_id, 0x7FF)
+
+        widget.device_profile_input.setCurrentIndex(widget.device_profile_input.findText("D7-沛城电池"))
+
+        self.assertEqual(widget.target_id_input.text(), "0x41")
+        self.assertEqual(widget.can_id_input.text(), "0x7ff")
+        self.assertEqual(widget.send_can_id_input.text(), "0x7ff")
+        self.assertEqual(widget._make_options().pre_upgrade_wakeup_ms, 1000)
+
     def test_ui_uses_html_preview_structure_and_copy(self):
         widget = Widget()
 
-        self.assertEqual(widget.subtitle_label.text(), "固件升级工具 · 现代流程引导版")
+        self.assertEqual(widget.windowTitle(), "D7 CAN IAP")
+        self.assertEqual(widget.title_label.text(), "D7 CAN IAP")
+        self.assertEqual(widget.device_profile_input.currentText(), "D7-CT02")
         self.assertIsInstance(widget.scroll_area, QScrollArea)
         self.assertEqual(
             [label.text() for label in widget.step_title_labels],

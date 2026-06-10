@@ -5,6 +5,7 @@ import csv
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -47,6 +48,22 @@ DEFAULT_DEVICE_INDEX = 0
 MAX_CAN_ROWS = 500
 
 
+@dataclass(frozen=True)
+class DeviceProfile:
+    name: str
+    target_id: int
+    can_id: int
+    pre_upgrade_wakeup_ms: int = 0
+
+
+DEVICE_PROFILES = (
+    DeviceProfile("D7-CT01", 0x18, 0x7FF),
+    DeviceProfile("D7-CT02", 0x19, 0x7FF),
+    DeviceProfile("D7-沛城电池", 0x41, 0x7FF, pre_upgrade_wakeup_ms=1000),
+)
+DEFAULT_DEVICE_PROFILE_NAME = "D7-CT02"
+
+
 class UpgradeWorker(QObject):
     log = Signal(str)
     progress = Signal(int)
@@ -79,7 +96,7 @@ class UpgradeWorker(QObject):
 class Widget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("D7 PMU CAN IAP")
+        self.setWindowTitle("D7 CAN IAP")
         self.resize(1120, 720)
 
         self.driver: ZlgCanBrokerDriver | None = None
@@ -110,10 +127,15 @@ class Widget(QWidget):
 
         self.app_icon_label = QLabel("IAP")
         self.app_icon_label.setObjectName("AppIcon")
-        self.title_label = QLabel("D7 PMU CAN IAP")
+        self.title_label = QLabel("D7 CAN IAP")
         self.title_label.setObjectName("TitleLabel")
-        self.subtitle_label = QLabel("固件升级工具 · 现代流程引导版")
-        self.subtitle_label.setObjectName("SubtitleLabel")
+        self.device_profile_input = QComboBox()
+        self.device_profile_input.setObjectName("DeviceProfileInput")
+        for profile in DEVICE_PROFILES:
+            self.device_profile_input.addItem(profile.name, profile)
+        default_profile_index = self.device_profile_input.findText(DEFAULT_DEVICE_PROFILE_NAME)
+        if default_profile_index >= 0:
+            self.device_profile_input.setCurrentIndex(default_profile_index)
         self.fixed_device_label = QLabel("USBCAN-I · Index 0")
         self.fixed_device_label.setObjectName("SummaryValue")
         self.can_status_dot = QLabel()
@@ -126,7 +148,7 @@ class Widget(QWidget):
         title_text_layout.setContentsMargins(0, 0, 0, 0)
         title_text_layout.setSpacing(3)
         title_text_layout.addWidget(self.title_label)
-        title_text_layout.addWidget(self.subtitle_label)
+        title_text_layout.addWidget(self.device_profile_input)
 
         self.status_pill = QWidget()
         self.status_pill.setObjectName("StatusPill")
@@ -178,18 +200,24 @@ class Widget(QWidget):
         self.baudrate_input = QComboBox()
         for value in (1_000_000, 500_000, 250_000, 125_000, 100_000):
             self.baudrate_input.addItem(f"{value:,}", value)
+        self.baudrate_input.setMinimumWidth(180)
 
-        self.target_id_input = QLineEdit("0x19")
-        self.can_id_input = QLineEdit("0x7ff")
+        current_profile = self._selected_device_profile()
+        self.target_id_input = QLineEdit(self._format_can_id(current_profile.target_id))
+        self.target_id_input.setMinimumWidth(96)
+        self.can_id_input = QLineEdit(self._format_can_id(current_profile.can_id))
+        self.can_id_input.setMinimumWidth(110)
 
         conn_layout = QGridLayout()
-        conn_layout.setContentsMargins(16, 18, 16, 16)
-        conn_layout.setHorizontalSpacing(12)
-        conn_layout.setVerticalSpacing(10)
-        self._add_labeled_widget(conn_layout, 0, "通道", self.channel_input)
-        self._add_labeled_widget(conn_layout, 1, "波特率", self.baudrate_input)
-        self._add_labeled_widget(conn_layout, 2, "目标 ID", self.target_id_input)
-        self._add_labeled_widget(conn_layout, 3, "IAP CAN ID", self.can_id_input)
+        conn_layout.setContentsMargins(18, 20, 18, 18)
+        conn_layout.setHorizontalSpacing(18)
+        conn_layout.setVerticalSpacing(12)
+        self._add_labeled_widget(conn_layout, 0, 0, "通道", self.channel_input)
+        self._add_labeled_widget(conn_layout, 0, 1, "波特率", self.baudrate_input)
+        self._add_labeled_widget(conn_layout, 2, 0, "目标 ID", self.target_id_input)
+        self._add_labeled_widget(conn_layout, 2, 1, "IAP CAN ID", self.can_id_input)
+        conn_layout.setColumnStretch(0, 1)
+        conn_layout.setColumnStretch(1, 1)
 
         self.open_button = QPushButton("打开设备")
         self.open_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
@@ -205,7 +233,7 @@ class Widget(QWidget):
         hint_label = QLabel("升级过程中配置项会自动锁定，避免误操作")
         hint_label.setObjectName("MutedLabel")
         button_row.addWidget(hint_label)
-        conn_layout.addLayout(button_row, 2, 0, 1, 8)
+        conn_layout.addLayout(button_row, 4, 0, 1, 2)
 
         self.conn_group = QGroupBox("设备连接")
         self._set_card_layout(self.conn_group, conn_layout)
@@ -330,7 +358,7 @@ class Widget(QWidget):
         self.left_panel.setLayout(left_layout)
         self.left_panel.setMinimumWidth(520)
 
-        self.send_can_id_input = QLineEdit("0x7ff")
+        self.send_can_id_input = QLineEdit(self._format_can_id(current_profile.can_id))
         self.send_can_id_input.setFixedWidth(130)
         self.send_data_input = QLineEdit()
         self.send_data_input.setPlaceholderText("例如：16 19 02 00 00 00 31 62")
@@ -475,6 +503,7 @@ class Widget(QWidget):
         layout.addWidget(self.scroll_area, 1)
 
     def _connect_signals(self) -> None:
+        self.device_profile_input.currentIndexChanged.connect(self._handle_device_profile_changed)
         self.bin_browse_button.clicked.connect(self._choose_bin)
         self.open_button.clicked.connect(self.open_device)
         self.close_button.clicked.connect(self.close_device)
@@ -831,11 +860,11 @@ class Widget(QWidget):
         )
 
     @staticmethod
-    def _add_labeled_widget(layout: QGridLayout, column: int, label_text: str, widget: QWidget) -> None:
+    def _add_labeled_widget(layout: QGridLayout, row: int, column: int, label_text: str, widget: QWidget) -> None:
         label = QLabel(label_text)
         label.setObjectName("MutedLabel")
-        layout.addWidget(label, 0, column * 2)
-        layout.addWidget(widget, 1, column * 2)
+        layout.addWidget(label, row, column)
+        layout.addWidget(widget, row + 1, column)
 
     def _set_card_layout(self, group: QGroupBox, body_layout) -> None:
         header = self._card_header(group.title())
@@ -1148,6 +1177,26 @@ class Widget(QWidget):
     def _make_driver(self) -> ZlgCanBrokerDriver:
         return ZlgCanBrokerDriver(self.selected_dll_path)
 
+    @Slot(int)
+    def _handle_device_profile_changed(self, _index: int) -> None:
+        self._apply_device_profile(self._selected_device_profile())
+
+    def _selected_device_profile(self) -> DeviceProfile:
+        profile = self.device_profile_input.currentData()
+        if isinstance(profile, DeviceProfile):
+            return profile
+        return next(profile for profile in DEVICE_PROFILES if profile.name == DEFAULT_DEVICE_PROFILE_NAME)
+
+    def _apply_device_profile(self, profile: DeviceProfile) -> None:
+        self.target_id_input.setText(self._format_can_id(profile.target_id))
+        self.can_id_input.setText(self._format_can_id(profile.can_id))
+        if hasattr(self, "send_can_id_input"):
+            self.send_can_id_input.setText(self._format_can_id(profile.can_id))
+
+    @staticmethod
+    def _format_can_id(value: int) -> str:
+        return f"0x{value:x}"
+
     def _ensure_driver_open(self) -> ZlgCanBrokerDriver:
         if self.driver and self.driver.is_open():
             return self.driver
@@ -1172,6 +1221,7 @@ class Widget(QWidget):
             device_index=DEFAULT_DEVICE_INDEX,
             channel=self.channel_input.currentData(),
             baudrate=self.baudrate_input.currentData(),
+            pre_upgrade_wakeup_ms=self._selected_device_profile().pre_upgrade_wakeup_ms,
         )
 
     def _load_firmware(self) -> FirmwareImage:
@@ -1213,6 +1263,14 @@ class Widget(QWidget):
         self.query_role_button.setEnabled(not busy and self._can_connected)
         self.send_button.setEnabled(not busy and self._can_connected)
         self.stop_button.setEnabled(busy)
+        for config_widget in (
+            self.device_profile_input,
+            self.channel_input,
+            self.baudrate_input,
+            self.target_id_input,
+            self.can_id_input,
+        ):
+            config_widget.setEnabled(not busy)
 
     def _set_connection_status(self, connected: bool, message: str, failed: bool = False) -> None:
         self._can_connected = connected

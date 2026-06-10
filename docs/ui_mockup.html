@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D7 CAN IAP · UI 改进方案</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  /* ============ Design tokens（收敛后的色板）============ */
+  :root{
+    --navy:#0f172a;
+    --teal:#0b3b4a;
+
+    --primary:#2563eb;        /* 品牌蓝：主操作 + 进行中步骤 */
+    --primary-weak:#eff6ff;
+    --primary-line:#bfdbfe;
+
+    --success:#16a34a;
+    --success-weak:#ecfdf5;
+    --success-line:#bbf7d0;
+
+    --danger:#dc2626;
+    --danger-weak:#fef2f2;
+    --danger-line:#fecaca;
+
+    --bg:#eef2f7;
+    --card:#ffffff;
+    --line:#e5e7eb;
+    --line-soft:#f1f5f9;
+    --field:#f8fafc;
+
+    --ink:#0f172a;
+    --ink-2:#334155;
+    --muted:#6b7280;
+    --muted-2:#94a3b8;
+
+    --mono:"JetBrains Mono","Cascadia Mono",Consolas,monospace;
+    --sans:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+
+    --radius:14px;
+    --radius-sm:9px;
+    --shadow-card:0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.06);
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{
+    font-family:var(--sans);
+    color:var(--ink);
+    /* 桌面背景，衬托应用窗口 */
+    background:
+      radial-gradient(1200px 600px at 20% -10%, #1e293b 0%, transparent 60%),
+      radial-gradient(1000px 500px at 110% 120%, #0b3b4a 0%, transparent 55%),
+      #0b1220;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:28px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ============ 应用窗口外壳 ============ */
+  .app-window{
+    width:1240px;
+    height:1110px;
+    background:var(--bg);
+    border-radius:12px;
+    overflow:hidden;
+    box-shadow:0 40px 90px -20px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04);
+    display:flex;
+    flex-direction:column;
+  }
+
+  /* 伪标题栏，强调这是桌面应用 */
+  .titlebar{
+    height:34px;flex:0 0 34px;
+    background:#0a0f1c;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:0 14px;
+    color:#cbd5e1;font-size:12px;
+  }
+  .titlebar .tb-title{display:flex;align-items:center;gap:8px;letter-spacing:.02em;}
+  .titlebar .tb-title .sq{width:11px;height:11px;border-radius:3px;
+    background:linear-gradient(135deg,#2f6df6,#15a8df 45%,#10b981);}
+  .tb-controls{display:flex;gap:18px;color:#64748b;font-size:13px;}
+  .tb-controls span{cursor:default;}
+  .tb-controls .close:hover{color:#f87171;}
+
+  /* ============ 顶部 Header ============ */
+  header{
+    flex:0 0 auto;
+    background:linear-gradient(100deg,var(--navy) 0%,#103445 60%,var(--teal) 100%);
+    padding:14px 24px;
+    display:flex;align-items:center;gap:16px;
+    position:relative;
+  }
+  header::after{ /* 顶部细高光，增加质感 */
+    content:"";position:absolute;inset:0 0 auto 0;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.18),transparent);
+  }
+  .logo{
+    width:42px;height:42px;border-radius:12px;
+    background:linear-gradient(135deg,#2f6df6,#15a8df 45%,#10b981);
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;font-weight:800;font-size:14px;letter-spacing:.03em;
+    border:1px solid rgba(255,255,255,.25);
+    box-shadow:0 6px 16px -4px rgba(47,109,246,.6);
+  }
+  .brand{display:flex;flex-direction:column;gap:5px;}
+  .brand h1{color:#f1f8f6;font-size:21px;font-weight:700;letter-spacing:.01em;}
+  /* header 内的下拉做成半透明深色，融入背景（改进点）*/
+  .device-select{
+    display:inline-flex;align-items:center;gap:8px;
+    background:rgba(255,255,255,.08);
+    border:1px solid rgba(255,255,255,.16);
+    color:#e2e8f0;
+    height:30px;padding:0 10px;border-radius:8px;
+    font-size:13px;font-weight:600;width:fit-content;cursor:pointer;
+  }
+  .device-select:hover{background:rgba(255,255,255,.14);}
+  .device-select svg{opacity:.7;}
+  .grow{flex:1;}
+  .conn-pill{
+    display:inline-flex;align-items:center;gap:8px;
+    background:rgba(34,197,94,.14);
+    border:1px solid rgba(34,197,94,.4);
+    padding:7px 14px;border-radius:18px;
+    color:#dcfce7;font-weight:600;font-size:13px;
+  }
+  .conn-pill .dot{width:9px;height:9px;border-radius:50%;background:#22c55e;
+    box-shadow:0 0 0 4px rgba(34,197,94,.25);animation:pulse 2s infinite;}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 4px rgba(34,197,94,.25);}50%{box-shadow:0 0 0 7px rgba(34,197,94,0);}}
+
+  /* ============ 步骤条（连接线 + 蓝色进行中）============ */
+  .stepper{
+    margin:14px 22px 0;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow-card);
+    padding:13px 22px;
+    display:flex;align-items:flex-start;
+  }
+  .step{display:flex;flex-direction:column;align-items:center;gap:6px;width:108px;text-align:center;}
+  .step .circle{
+    width:32px;height:32px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:13px;color:#fff;background:var(--muted-2);
+    transition:.25s;
+  }
+  .step .s-title{font-size:13px;font-weight:600;color:var(--ink);}
+  .step .s-desc{font-size:11.5px;color:var(--muted);}
+  .step.done .circle{background:var(--success);}
+  .step.active .circle{
+    background:var(--primary);
+    box-shadow:0 0 0 5px var(--primary-weak);
+    animation:stepPulse 1.8s infinite;
+  }
+  .step.active .s-title{color:var(--primary);}
+  @keyframes stepPulse{0%,100%{box-shadow:0 0 0 5px var(--primary-weak);}50%{box-shadow:0 0 0 9px rgba(37,99,235,.10);}}
+  .step.pending .s-title{color:var(--muted-2);}
+  /* 连接线，对齐圆心 */
+  .connector{flex:1;height:2px;background:var(--line);margin-top:15px;border-radius:2px;position:relative;overflow:hidden;}
+  .connector.done{background:var(--success);}
+  .connector.active{background:var(--line);}
+  .connector.active::after{
+    content:"";position:absolute;inset:0;width:50%;
+    background:linear-gradient(90deg,var(--primary),transparent);
+  }
+
+  /* ============ 主体两栏 ============ */
+  .body{flex:1;min-height:0;padding:14px 22px 18px;display:flex;gap:18px;}
+  .col{display:flex;flex-direction:column;gap:12px;min-height:0;padding:0 3px;}
+  /* 两列均严格 flex：底部的日志/CAN 面板用 flex:1 撑满列高 */
+  .col.left{flex:1;}
+  .col.right{flex:1;}
+
+  /* 卡片 */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow-card);display:flex;flex-direction:column;}
+  .card-head{display:flex;align-items:center;gap:9px;padding:12px 16px 10px;border-bottom:1px solid var(--line-soft);}
+  .card-head .mark{width:4px;height:16px;border-radius:2px;background:var(--primary);}
+  .card-head h2{font-size:15px;font-weight:600;letter-spacing:.01em;}
+  .card-head .head-extra{margin-left:auto;}
+  .card-body{padding:14px;}
+
+  label.fld{font-size:12px;color:var(--muted);font-weight:500;display:block;margin-bottom:6px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px 16px;}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:0 12px;}
+  .input,.combo{
+    width:100%;height:34px;border:1px solid #d1d5db;border-radius:var(--radius-sm);
+    background:#fff;padding:0 11px;font-size:13px;font-weight:500;color:var(--ink-2);
+    font-family:var(--mono);
+    display:flex;align-items:center;
+  }
+  .combo{justify-content:space-between;cursor:pointer;font-family:var(--sans);font-weight:600;}
+  .input:focus-within,.combo:hover{border-color:var(--primary-line);}
+  .combo svg{color:var(--muted-2);}
+
+  /* 按钮 */
+  .btn{height:34px;border-radius:var(--radius-sm);border:1px solid var(--primary);
+    background:var(--primary);color:#fff;font-weight:600;font-size:13px;
+    padding:0 14px;display:inline-flex;align-items:center;gap:7px;cursor:pointer;
+    font-family:var(--sans);transition:.15s;}
+  .btn:hover{filter:brightness(1.06);box-shadow:0 4px 12px -4px rgba(37,99,235,.5);}
+  .btn.secondary{background:var(--field);color:var(--ink-2);border-color:#d1d5db;}
+  .btn.secondary:hover{filter:none;background:#eef2f7;box-shadow:none;}
+  .btn.danger{background:#fff;color:var(--danger);border-color:var(--danger-line);}
+  .btn.danger:hover{background:var(--danger-weak);filter:none;box-shadow:none;}
+  .btn:disabled{background:#e5e7eb;border-color:#e5e7eb;color:#9ca3af;cursor:not-allowed;box-shadow:none;filter:none;}
+  .btn svg{width:15px;height:15px;}
+  .btn-row{display:flex;align-items:center;gap:10px;margin-top:16px;}
+  .hint{font-size:11.5px;color:var(--muted-2);margin-left:auto;}
+
+  /* 固件指标网格（改进点：填满信息）*/
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px;}
+  .metric{background:var(--field);border:1px solid var(--line-soft);border-radius:11px;padding:9px 10px;}
+  .metric .m-label{font-size:11px;color:var(--muted);font-weight:500;margin-bottom:3px;}
+  .metric .m-value{font-family:var(--mono);font-size:13.5px;font-weight:700;color:var(--ink);}
+
+  .file-row{display:flex;gap:10px;align-items:flex-end;}
+  .file-row .grow{flex:1;}
+
+  /* 升级控制 */
+  .role-band{
+    background:linear-gradient(95deg,var(--primary-weak),#f8fafc);
+    border:1px solid #dbeafe;border-radius:13px;padding:13px 15px;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .role-band .r-label{font-size:12px;color:var(--muted);font-weight:500;}
+  .role-band .r-value{font-size:24px;font-weight:700;color:#1e3a8a;letter-spacing:.02em;line-height:1.15;}
+  .sec-label{font-size:13px;font-weight:600;color:var(--ink);margin:14px 0 8px;}
+  .progress{height:16px;background:#e5e7eb;border-radius:8px;overflow:hidden;position:relative;}
+  .progress .fill{height:100%;width:47%;border-radius:8px;
+    background:linear-gradient(90deg,#22c55e,#16a34a);position:relative;overflow:hidden;}
+  .progress .fill::after{content:"";position:absolute;inset:0;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);
+    animation:shimmer 1.6s infinite;}
+  @keyframes shimmer{0%{transform:translateX(-100%);}100%{transform:translateX(220%);}}
+  .progress .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;color:#0f172a;}
+  .elapsed{display:flex;align-items:center;justify-content:space-between;
+    background:var(--field);border:1px solid var(--line-soft);border-radius:11px;padding:9px 13px;margin-top:12px;}
+  .elapsed .e-label{font-size:12px;color:var(--muted);font-weight:500;}
+  .elapsed .e-value{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--ink);}
+
+  /* 设备状态 summary */
+  .summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .summary{background:var(--field);border:1px solid var(--line-soft);border-radius:11px;padding:8px 11px;}
+  .summary .s-label{font-size:11px;color:var(--muted);font-weight:500;margin-bottom:3px;}
+  .summary .s-value{font-size:13px;font-weight:700;color:var(--ink);word-break:break-all;}
+  .summary .s-value.small{font-size:11.5px;font-weight:600;color:var(--ink-2);font-family:var(--mono);}
+  .dll-row{display:flex;align-items:center;gap:8px;}
+  .dll-row .grow{flex:1;}
+
+  /* CAN 监控 */
+  .tabs{display:flex;gap:8px;}
+  .tab{height:30px;padding:0 14px;border-radius:15px;border:1px solid var(--line);
+    background:#fff;color:#64748b;font-size:12px;font-weight:600;
+    display:flex;align-items:center;gap:6px;cursor:pointer;}
+  .tab.active{background:var(--primary-weak);border-color:var(--primary-line);color:var(--primary);}
+  .tab .badge{font-family:var(--mono);font-size:10px;background:rgba(37,99,235,.12);
+    padding:1px 6px;border-radius:8px;}
+
+  .filter-row{display:flex;gap:8px;align-items:center;margin-top:10px;}
+  .filter-row .input{flex:1;font-family:var(--sans);font-weight:500;}
+  .chips{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}
+  .chip{height:25px;padding:0 10px;border-radius:12px;border:1px solid #d1d5db;background:#fff;
+    color:var(--ink-2);font-family:var(--mono);font-size:11.5px;font-weight:700;
+    display:flex;align-items:center;cursor:pointer;}
+  .chip.on{background:var(--primary-weak);border-color:var(--primary-line);color:var(--primary);}
+
+  .can-table{flex:1;min-height:120px;margin-top:12px;border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;}
+  table{flex:1;min-height:0;width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px;display:flex;flex-direction:column;}
+  thead{flex:0 0 auto;display:table;width:100%;table-layout:fixed;}
+  thead th{background:var(--field);color:#475569;font-weight:700;text-align:left;
+    padding:8px 10px;border-bottom:1px solid var(--line);font-family:var(--sans);font-size:11.5px;letter-spacing:.02em;}
+  tbody{flex:1;min-height:0;display:block;overflow-y:auto;}
+  tbody tr{display:table;width:100%;table-layout:fixed;}
+  tbody td{padding:6px 10px;border-bottom:1px solid var(--line-soft);color:var(--ink-2);}
+  /* 列宽与表头对齐（每个 tr 是独立的 fixed table）*/
+  thead th:nth-child(1),tbody td:nth-child(1){width:54px;}
+  thead th:nth-child(2),tbody td:nth-child(2){width:96px;}
+  thead th:nth-child(3),tbody td:nth-child(3){width:64px;}
+  thead th:nth-child(4),tbody td:nth-child(4){width:42px;}
+  tbody tr:nth-child(even){background:#fbfcfe;}
+  .dir{font-family:var(--sans);font-weight:700;font-size:11px;padding:1px 7px;border-radius:6px;}
+  .dir.rx{background:#eff6ff;color:#2563eb;}
+  .dir.tx{background:#fffbeb;color:#b45309;}
+  td.center{text-align:center;}
+
+  /* 系统日志（紧凑、固定底部，无需滚动整页）*/
+  /* min-height 设低，让 flex 决定高度而非 floor，避免左列溢出导致底部不齐 */
+  .log-card{flex:1;min-height:100px;background:#0b1220;border-radius:var(--radius);
+    overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--shadow-card);}
+  .log-head{display:flex;align-items:center;gap:8px;padding:9px 16px;border-bottom:1px solid rgba(255,255,255,.06);}
+  .log-head .mark{width:4px;height:14px;border-radius:2px;background:#38bdf8;}
+  .log-head h2{color:#e2e8f0;font-size:13px;font-weight:600;}
+  .log-head .clear{margin-left:auto;color:#64748b;font-size:11px;cursor:pointer;}
+  .log-body{flex:1;overflow-y:auto;padding:8px 16px;font-family:var(--mono);font-size:11.5px;line-height:1.7;color:#9fb3d1;}
+  .log-body .t{color:#475569;}
+  .log-body .ok{color:#4ade80;}
+  .log-body .info{color:#7dd3fc;}
+
+  /* 滚动条 */
+  ::-webkit-scrollbar{width:9px;height:9px;}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:6px;border:2px solid transparent;background-clip:content-box;}
+  .log-body::-webkit-scrollbar-thumb{background:#334155;border-radius:6px;border:2px solid transparent;background-clip:content-box;}
+  ::-webkit-scrollbar-track{background:transparent;}
+</style>
+</head>
+<body>
+  <div class="app-window">
+
+    <!-- 伪标题栏 -->
+    <div class="titlebar">
+      <div class="tb-title"><span class="sq"></span> D7 CAN IAP</div>
+      <div class="tb-controls"><span>—</span><span>▢</span><span class="close">✕</span></div>
+    </div>
+
+    <!-- Header -->
+    <header>
+      <div class="logo">IAP</div>
+      <div class="brand">
+        <h1>D7 CAN IAP</h1>
+        <div class="device-select">D7-CT02
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+      </div>
+      <div class="grow"></div>
+      <div class="conn-pill"><span class="dot"></span>已连接 · CH0 · 1,000,000 bps</div>
+    </header>
+
+    <!-- 步骤条：连接线串联，进行中=蓝色（不再用红色）-->
+    <div class="stepper">
+      <div class="step done">
+        <div class="circle">✓</div>
+        <div class="s-title">连接设备</div>
+        <div class="s-desc">USBCAN-I 已打开</div>
+      </div>
+      <div class="connector done"></div>
+      <div class="step done">
+        <div class="circle">✓</div>
+        <div class="s-title">选择固件</div>
+        <div class="s-desc">APP 固件已读取</div>
+      </div>
+      <div class="connector done"></div>
+      <div class="step done">
+        <div class="circle">✓</div>
+        <div class="s-title">查询角色</div>
+        <div class="s-desc">当前角色 APP</div>
+      </div>
+      <div class="connector active"></div>
+      <div class="step active">
+        <div class="circle">4</div>
+        <div class="s-title">升级写入</div>
+        <div class="s-desc">写入中 · 47%</div>
+      </div>
+      <div class="connector"></div>
+      <div class="step pending">
+        <div class="circle">5</div>
+        <div class="s-title">完成校验</div>
+        <div class="s-desc">等待完成</div>
+      </div>
+    </div>
+
+    <!-- 主体 -->
+    <div class="body">
+
+      <!-- 左列 -->
+      <div class="col left">
+
+        <!-- 设备连接 -->
+        <div class="card">
+          <div class="card-head"><span class="mark"></span><h2>设备连接</h2></div>
+          <div class="card-body">
+            <div class="grid4">
+              <div>
+                <label class="fld">通道</label>
+                <div class="combo">CH0 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+              </div>
+              <div>
+                <label class="fld">波特率</label>
+                <div class="combo">1,000,000 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></div>
+              </div>
+              <div>
+                <label class="fld">目标 ID</label>
+                <div class="input">0x19</div>
+              </div>
+              <div>
+                <label class="fld">IAP CAN ID</label>
+                <div class="input">0x7ff</div>
+              </div>
+            </div>
+            <div class="btn-row">
+              <button class="btn" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>已打开
+              </button>
+              <button class="btn danger">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>关闭设备
+              </button>
+              <span class="hint">升级中配置项自动锁定</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 固件文件：补齐 SP / ResetVector / 类型（改进点）-->
+        <div class="card">
+          <div class="card-head"><span class="mark"></span><h2>固件文件</h2></div>
+          <div class="card-body">
+            <div class="file-row">
+              <div class="grow">
+                <label class="fld">APP 固件</label>
+                <div class="input" style="font-family:var(--sans);color:var(--ink-2);font-weight:500;">D7_CT02_app_v1.4.2.bin</div>
+              </div>
+              <button class="btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>选择固件
+              </button>
+            </div>
+            <div class="metrics">
+              <div class="metric"><div class="m-label">Size</div><div class="m-value">98,304 bytes</div></div>
+              <div class="metric"><div class="m-label">镜像类型</div><div class="m-value">APP</div></div>
+              <div class="metric"><div class="m-label">Initial SP</div><div class="m-value">0x20020000</div></div>
+              <div class="metric"><div class="m-label">Reset Vector</div><div class="m-value">0x08010135</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 升级控制 -->
+        <div class="card">
+          <div class="card-head"><span class="mark"></span><h2>升级控制</h2></div>
+          <div class="card-body" style="display:flex;flex-direction:column;">
+            <div class="role-band">
+              <div>
+                <div class="r-label">当前设备角色</div>
+                <div class="r-value">APP</div>
+              </div>
+              <button class="btn secondary">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12a8 8 0 018-8 8 8 0 016.9 4M20 12a8 8 0 01-8 8 8 8 0 01-6.9-4"/><path d="M19 4v4h-4M5 20v-4h4"/></svg>重新查询
+              </button>
+            </div>
+
+            <div class="sec-label">写入进度</div>
+            <div class="progress"><div class="fill"></div><div class="pct">47%</div></div>
+
+            <div class="elapsed">
+              <span class="e-label">升级耗时</span>
+              <span class="e-value">00:00:18.426</span>
+            </div>
+
+            <div class="btn-row">
+              <button class="btn" disabled>
+                <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 5v14l11-7z"/></svg>开始升级
+              </button>
+              <button class="btn danger">
+                <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>停止升级
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 系统日志：移入左列底部，撑满剩余高度 -->
+        <div class="log-card">
+          <div class="log-head"><span class="mark"></span><h2>系统日志</h2><span class="clear">清空</span></div>
+          <div class="log-body">
+            <div><span class="t">14:22:06.901</span> <span class="info">CAN 设备已打开：通道 0，1000000 bps</span></div>
+            <div><span class="t">14:22:07.002</span> 固件大小：98304 bytes ｜ Initial SP：0x20020000 ｜ ResetVector：0x08010135</div>
+            <div><span class="t">14:22:07.210</span> <span class="ok">当前角色 APP</span></div>
+            <div><span class="t">14:22:07.318</span> 开始升级 → 进入 Bootloader，擦除扇区 0x08010000…</div>
+            <div><span class="t">14:22:09.044</span> 擦除完成，开始写入数据块…</div>
+            <div><span class="t">14:22:13.561</span> 写入中… 24% （23,552 / 98,304 bytes）</div>
+            <div><span class="t">14:22:18.426</span> 写入中… 47% （45,056 / 98,304 bytes）</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 右列 -->
+      <div class="col right">
+
+        <!-- 设备状态 -->
+        <div class="card">
+          <div class="card-head"><span class="mark"></span><h2>设备状态</h2></div>
+          <div class="card-body">
+            <div class="summary-grid">
+              <div class="summary"><div class="s-label">固定设备</div><div class="s-value">USBCAN-I · Index 0</div></div>
+              <div class="summary"><div class="s-label">接收帧数</div><div class="s-value">1,284 帧</div></div>
+              <div class="summary"><div class="s-label">当前 DLL</div><div class="s-value small">C:\Program Files (x86)\ZCANPRO\zlgcan.dll</div></div>
+              <div class="summary">
+                <div class="s-label">DLL 配置</div>
+                <div class="dll-row">
+                  <div class="s-value grow" style="font-size:12.5px;">使用默认 zlgcan.dll</div>
+                  <button class="btn secondary" style="height:28px;padding:0 10px;font-size:12px;">选择</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CAN 发送调试 -->
+        <div class="card">
+          <div class="card-head"><span class="mark"></span><h2>CAN 发送调试</h2></div>
+          <div class="card-body">
+            <div style="display:flex;gap:10px;align-items:flex-end;">
+              <div style="width:120px;">
+                <label class="fld">CAN ID</label>
+                <div class="input">0x7ff</div>
+              </div>
+              <div style="flex:1;">
+                <label class="fld">Data hex</label>
+                <div class="input" style="color:var(--muted-2);">16 19 02 00 00 00 31 62</div>
+              </div>
+              <button class="btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>发送
+              </button>
+              <button class="btn secondary">清空</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- CAN 监控 -->
+        <div class="card" style="flex:1;min-height:0;">
+          <div class="card-head">
+            <span class="mark"></span><h2>CAN 监控</h2>
+            <div class="head-extra"><button class="btn secondary" style="height:28px;padding:0 10px;font-size:12px;">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>导出 CSV</button></div>
+          </div>
+          <div class="card-body" style="flex:1;min-height:0;display:flex;flex-direction:column;">
+            <div class="tabs">
+              <div class="tab active">接收数据 <span class="badge">1284</span></div>
+              <div class="tab">发送数据 <span class="badge" style="background:rgba(100,116,139,.12);">37</span></div>
+              <div class="tab">错误帧 <span class="badge" style="background:rgba(220,38,38,.12);color:#dc2626;">0</span></div>
+            </div>
+            <div class="filter-row">
+              <div class="input">过滤 CAN ID：0x41, 0x7FF</div>
+              <button class="btn">应用</button>
+              <button class="btn secondary">暂停显示</button>
+            </div>
+            <div class="chips">
+              <div class="chip on">0x7FF</div>
+              <div class="chip">0x19</div>
+              <div class="chip">0x41</div>
+              <div class="chip">0x18</div>
+            </div>
+            <div class="can-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:54px;">方向</th>
+                    <th style="width:96px;">时间</th>
+                    <th style="width:64px;">CANID</th>
+                    <th style="width:42px;">Len</th>
+                    <th>Data</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td class="center"><span class="dir tx">TX</span></td><td>14:22:07.318</td><td class="center">0x7FF</td><td class="center">8</td><td>16 19 02 00 00 00 31 62</td></tr>
+                  <tr><td class="center"><span class="dir rx">RX</span></td><td>14:22:07.342</td><td class="center">0x7FF</td><td class="center">8</td><td>16 19 02 00 00 00 31 62</td></tr>
+                  <tr><td class="center"><span class="dir tx">TX</span></td><td>14:22:07.401</td><td class="center">0x7FF</td><td class="center">8</td><td>36 00 00 02 00 00 80 0C</td></tr>
+                  <tr><td class="center"><span class="dir rx">RX</span></td><td>14:22:07.428</td><td class="center">0x7FF</td><td class="center">3</td><td>76 00 00</td></tr>
+                  <tr><td class="center"><span class="dir tx">TX</span></td><td>14:22:07.455</td><td class="center">0x7FF</td><td class="center">8</td><td>31 01 08 00 00 00 00 00</td></tr>
+                  <tr><td class="center"><span class="dir rx">RX</span></td><td>14:22:07.480</td><td class="center">0x7FF</td><td class="center">2</td><td>71 01</td></tr>
+                  <tr><td class="center"><span class="dir tx">TX</span></td><td>14:22:07.512</td><td class="center">0x7FF</td><td class="center">8</td><td>34 00 20 00 08 01 00 00</td></tr>
+                  <tr><td class="center"><span class="dir rx">RX</span></td><td>14:22:07.539</td><td class="center">0x7FF</td><td class="center">2</td><td>74 20</td></tr>
+                  <tr><td class="center"><span class="dir tx">TX</span></td><td>14:22:07.566</td><td class="center">0x7FF</td><td class="center">8</td><td>36 00 11 22 33 44 55 66</td></tr>
+                  <tr><td class="center"><span class="dir rx">RX</span></td><td>14:22:07.593</td><td class="center">0x7FF</td><td class="center">3</td><td>76 00 01</td></tr>
+                  <tr><td class="center"><span class="dir tx">TX</span></td><td>14:22:07.620</td><td class="center">0x7FF</td><td class="center">8</td><td>36 00 77 88 99 AA BB CC</td></tr>
+                  <tr><td class="center"><span class="dir rx">RX</span></td><td>14:22:07.647</td><td class="center">0x7FF</td><td class="center">3</td><td>76 00 02</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

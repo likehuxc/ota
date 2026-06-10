@@ -8,7 +8,6 @@ from typing import Callable
 from d7_pmu_iap_tool.can.can_frame import CanDriver, CanFrame
 from d7_pmu_iap_tool.iap.firmware_image import FirmwareImage
 from d7_pmu_iap_tool.iap.iap_protocol import (
-    CMD_FILL_SEGMENT_DATA,
     CMD_GET_RUN_ROLE,
     CMD_JUMP_TO_APP,
     CMD_SET_FIRMWARE_SIZE,
@@ -38,6 +37,7 @@ class UpgradeOptions:
     boot_total_wait_ms: int = 10_000
     app_start_wait_ms: int = 1_000
     app_total_wait_ms: int = 5_000
+    pre_upgrade_wakeup_ms: int = 0
     data_frame_delay_ms: int = 2
     set_firmware_retries: int = 1
     set_segment_retries: int = 2
@@ -68,6 +68,10 @@ class IapUpgradeController:
         self._cancel_event.clear()
         self.on_progress(0)
         self._open_if_needed(opts)
+
+        if opts.pre_upgrade_wakeup_ms > 0:
+            self._send(self.protocol.query_role())
+            self._sleep_with_cancel(opts.pre_upgrade_wakeup_ms)
 
         for warning in image.warnings:
             self._log(f"警告：{warning}")
@@ -166,7 +170,7 @@ class IapUpgradeController:
 
         for frame in self.protocol.segment_data_frames(section_data):
             self._check_cancelled()
-            self._command_with_ack(frame, CMD_FILL_SEGMENT_DATA, options.ack_timeout_ms)
+            self._send(frame)
             if options.data_frame_delay_ms > 0:
                 time.sleep(options.data_frame_delay_ms / 1000)
 
