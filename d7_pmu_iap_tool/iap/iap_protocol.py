@@ -43,6 +43,9 @@ class IapProtocol:
     def get_software_version(self) -> CanFrame:
         return self._tail_command(CMD_GET_SOFT_VERSION)
 
+    def set_can_messages_enabled(self, enabled: bool) -> CanFrame:
+        return self._tail_command(CMD_ENABLE_CAN, bytes([1 if enabled else 0, 0, 0]))
+
     def set_firmware_size(self, total_size: int) -> CanFrame:
         if not 0 <= total_size <= 0xFFFFFF:
             raise ValueError("firmware size must fit in 24 bits")
@@ -107,7 +110,7 @@ class IapProtocol:
         expected_checksum = checksum8(frame[:7])
         if frame[7] != expected_checksum:
             raise ValueError(f"ACK checksum mismatch: got 0x{frame[7]:02X}, expected 0x{expected_checksum:02X}")
-        if frame[2] != CMD_SET_SEGMENT_INFO and frame[6] != PROTOCOL_TAIL:
+        if frame[2] not in (CMD_SET_SEGMENT_INFO, CMD_VALIDATE_SEGMENT_DATA) and frame[6] != PROTOCOL_TAIL:
             raise ValueError(f"ACK frame tail mismatch: got 0x{frame[6]:02X}, expected 0x{PROTOCOL_TAIL:02X}")
         return IapAck(command=frame[2], params=frame[3:7])
 

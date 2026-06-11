@@ -1,4 +1,5 @@
 import os
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,6 +88,50 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(widget.can_id_input.text(), "0x7ff")
         self.assertEqual(widget.send_can_id_input.text(), "0x7ff")
         self.assertEqual(widget._make_options().pre_upgrade_wakeup_ms, 1000)
+        self.assertTrue(widget._make_options().disable_target_can_messages)
+        self.assertFalse(widget._make_options().wait_data_frame_ack)
+        self.assertTrue(widget._make_options().ignore_validate_ack_failure)
+        self.assertEqual(widget._make_options().app_start_wait_ms, 10000)
+        self.assertEqual(widget._make_options().app_total_wait_ms, 25000)
+
+        widget.device_profile_input.setCurrentIndex(widget.device_profile_input.findText("D7-CT02"))
+
+        self.assertEqual(widget.target_id_input.text(), "0x19")
+        self.assertEqual(widget.can_id_input.text(), "0x7ff")
+        self.assertEqual(widget._make_protocol().target_id, 0x19)
+        self.assertFalse(widget._make_options().disable_target_can_messages)
+        self.assertFalse(widget._make_options().wait_data_frame_ack)
+        self.assertFalse(widget._make_options().ignore_validate_ack_failure)
+        self.assertEqual(widget._make_options().app_start_wait_ms, 1000)
+        self.assertEqual(widget._make_options().app_total_wait_ms, 5000)
+
+    def test_device_selector_target_id_mapping_for_all_profiles(self):
+        widget = Widget()
+
+        for (
+            profile_name,
+            expected_target_id,
+            expected_disable_can,
+            expected_wait_data_ack,
+            expected_ignore_validate,
+            expected_app_start_wait,
+            expected_app_total_wait,
+        ) in (
+            ("D7-CT01", "0x18", False, False, False, 1000, 5000),
+            ("D7-CT02", "0x19", False, False, False, 1000, 5000),
+            ("D7-沛城电池", "0x41", True, False, True, 10000, 25000),
+        ):
+            with self.subTest(profile_name=profile_name):
+                widget.device_profile_input.setCurrentIndex(widget.device_profile_input.findText(profile_name))
+
+                self.assertEqual(widget.target_id_input.text(), expected_target_id)
+                self.assertEqual(widget.can_id_input.text(), "0x7ff")
+                self.assertEqual(widget._make_protocol().target_id, int(expected_target_id, 16))
+                self.assertEqual(widget._make_options().disable_target_can_messages, expected_disable_can)
+                self.assertEqual(widget._make_options().wait_data_frame_ack, expected_wait_data_ack)
+                self.assertEqual(widget._make_options().ignore_validate_ack_failure, expected_ignore_validate)
+                self.assertEqual(widget._make_options().app_start_wait_ms, expected_app_start_wait)
+                self.assertEqual(widget._make_options().app_total_wait_ms, expected_app_total_wait)
 
     def test_ui_uses_html_preview_structure_and_copy(self):
         widget = Widget()
@@ -152,6 +197,7 @@ class WidgetTests(unittest.TestCase):
         self.assertFalse(widget.close_button.isEnabled())
         self.assertFalse(widget.query_role_button.isEnabled())
         self.assertFalse(widget.start_upgrade_button.isEnabled())
+        self.assertTrue(widget.simulate_battery_button.isEnabled())
 
     def test_can_status_updates_when_connection_changes(self):
         widget = Widget()
@@ -260,6 +306,27 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(widget.can_table.item(0, 0).text(), "TX")
         self.assertEqual(widget.can_table.item(0, 2).text(), "0x321")
 
+    def test_battery_upgrade_simulation_logs_preview_frames_without_can_connection(self):
+        widget = Widget()
+        image_data = struct.pack("<II", 0x20001000, 0x000202C9) + bytes(range(64))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "app.bin"
+            path.write_bytes(image_data)
+            widget.bin_path_input.setText(str(path))
+
+            widget.simulate_battery_upgrade()
+
+        log_text = widget.log_output.toPlainText()
+        self.assertIn("模拟电池升级：忽略 ACK", log_text)
+        self.assertIn(
+            "模拟TX[01] 预唤醒查询角色 0x02：ID=0x7FF, Len=8, Data=16 41 02 00 00 00 E9 42",
+            log_text,
+        )
+        self.assertIn("模拟TX[05] 关闭 CAN 消息发送 0x04：ID=0x7FF, Len=8, Data=16 41 04 00 00 00 E9 44", log_text)
+        self.assertIn("模拟TX[07] 首段段信息 0x06", log_text)
+        self.assertEqual(log_text.count("首段自升级数据包 0x07"), 10)
+
     def test_system_log_is_in_left_panel_and_can_area_owns_the_right_panel(self):
         widget = Widget()
 
@@ -341,7 +408,7 @@ class WidgetTests(unittest.TestCase):
 
         self.assertEqual(widget.can_table.rowCount(), 60)
 
-    def test_save_rx_can_records_exports_all_received_rows_ignoring_filter(self):
+    def test_save_can_records_exports_all_rows_ignoring_filter(self):
         widget = Widget()
         widget._append_can_frame("RX", CanFrame(id=0x41, data=b"\x01"))
         widget._append_can_frame("TX", CanFrame(id=0x7FF, data=b"\x02"))
@@ -350,30 +417,33 @@ class WidgetTests(unittest.TestCase):
         widget.apply_can_filter()
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "rx.csv"
-            widget._save_rx_can_records(output_path)
+            output_path = Path(temp_dir) / "can.csv"
+            widget._save_can_records(output_path)
             content = output_path.read_text(encoding="utf-8")
 
         self.assertIn("direction,time,canid,len,data", content)
         self.assertIn("RX,", content)
+        self.assertIn("TX,", content)
         self.assertIn("0x41", content)
         self.assertIn("0x305", content)
-        self.assertNotIn("TX,", content)
-        self.assertNotIn("0x7FF", content)
+        self.assertIn("0x7FF", content)
 
-    def test_save_rx_can_records_keeps_rows_beyond_display_limit(self):
+    def test_save_can_records_keeps_rows_beyond_display_limit(self):
         widget = Widget()
         for index in range(MAX_CAN_ROWS + 1):
-            widget._append_can_frame("RX", CanFrame(id=0x41, data=bytes([index & 0xFF])))
+            direction = "TX" if index % 2 else "RX"
+            can_id = 0x7FF if direction == "TX" else 0x41
+            widget._append_can_frame(direction, CanFrame(id=can_id, data=bytes([index & 0xFF])))
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "rx.csv"
-            saved_count = widget._save_rx_can_records(output_path)
+            output_path = Path(temp_dir) / "can.csv"
+            saved_count = widget._save_can_records(output_path)
             lines = output_path.read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(widget.can_table.rowCount(), MAX_CAN_ROWS)
         self.assertEqual(saved_count, MAX_CAN_ROWS + 1)
         self.assertEqual(len(lines), MAX_CAN_ROWS + 2)
+        self.assertTrue(any(line.startswith("TX,") for line in lines[1:]))
 
 
 if __name__ == "__main__":

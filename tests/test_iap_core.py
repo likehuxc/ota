@@ -37,6 +37,15 @@ class IapProtocolTests(unittest.TestCase):
 
         self.assertEqual(bytes(frame.data), bytes([0x16, 0x19, 0x05, 0x01, 0x23, 0x45, 0xE9, 0x86]))
 
+    def test_builds_can_message_enable_command(self):
+        protocol = IapProtocol(target_id=0x41, can_id=0x7FF)
+
+        disable_frame = protocol.set_can_messages_enabled(False)
+        enable_frame = protocol.set_can_messages_enabled(True)
+
+        self.assertEqual(bytes(disable_frame.data), bytes([0x16, 0x41, 0x04, 0, 0, 0, 0xE9, 0x44]))
+        self.assertEqual(bytes(enable_frame.data), bytes([0x16, 0x41, 0x04, 1, 0, 0, 0xE9, 0x45]))
+
     def test_builds_segment_info_without_tail_byte(self):
         protocol = IapProtocol(target_id=0x19, can_id=0x7FF)
 
@@ -60,6 +69,13 @@ class IapProtocolTests(unittest.TestCase):
         frame = protocol.validate_segment(section_num=3, section_data=bytes(range(1, 12)), crc_head_extra=0)
 
         self.assertEqual(bytes(frame.data), bytes([0x16, 0x19, 0x08, 0x00, 0xBD, 0xC3, 0x00, 0x2A]))
+
+    def test_validate_segment_ack_does_not_require_tail_byte(self):
+        protocol = IapProtocol(target_id=0x19, can_id=0x7FF)
+
+        ack = protocol.parse_ack(bytes([0x16, 0x19, 0x08, 1, 0, 0, 0x80, 0xB8]), expected_cmd=0x08)
+
+        self.assertEqual(ack, IapAck(command=0x08, params=bytes([1, 0, 0, 0x80])))
 
     def test_parses_ack_and_rejects_bad_tail(self):
         protocol = IapProtocol(target_id=0x19, can_id=0x7FF)

@@ -8,6 +8,8 @@ from typing import Callable
 from d7_pmu_iap_tool.can.can_frame import CanDriver, CanFrame
 from d7_pmu_iap_tool.iap.firmware_image import FirmwareImage
 from d7_pmu_iap_tool.iap.iap_protocol import (
+    CMD_ENABLE_CAN,
+    CMD_FILL_SEGMENT_DATA,
     CMD_GET_RUN_ROLE,
     CMD_JUMP_TO_APP,
     CMD_SET_FIRMWARE_SIZE,
@@ -15,6 +17,7 @@ from d7_pmu_iap_tool.iap.iap_protocol import (
     CMD_VALIDATE_SEGMENT_DATA,
     IapAck,
     IapProtocol,
+    PROTOCOL_HEAD,
     RUN_ROLE_APP,
     RUN_ROLE_BOOTLOADER,
 )
@@ -38,10 +41,47 @@ class UpgradeOptions:
     app_start_wait_ms: int = 1_000
     app_total_wait_ms: int = 5_000
     pre_upgrade_wakeup_ms: int = 0
+    disable_target_can_messages: bool = False
     data_frame_delay_ms: int = 2
+    wait_data_frame_ack: bool = False
+    data_frame_ack_timeout_ms: int = 200
+    ignore_validate_ack_failure: bool = False
     set_firmware_retries: int = 1
     set_segment_retries: int = 2
     validate_segment_retries: int = 2
+
+
+def build_upgrade_preview_frames(
+    protocol: IapProtocol,
+    image: FirmwareImage,
+    options: UpgradeOptions | None = None,
+    max_data_frames: int = 10,
+) -> list[tuple[str, CanFrame]]:
+    if max_data_frames < 0:
+        raise ValueError("max_data_frames must be >= 0")
+
+    opts = options or UpgradeOptions()
+    frames: list[tuple[str, CanFrame]] = []
+    if opts.pre_upgrade_wakeup_ms > 0:
+        frames.append(("预唤醒查询角色 0x02", protocol.query_role()))
+
+    frames.extend([
+        ("查询当前角色 0x02", protocol.query_role()),
+        ("软件复位进 BOOT 0x01", protocol.reboot_to_bootloader()),
+        ("复位后查询角色 0x02", protocol.query_role()),
+    ])
+    if opts.disable_target_can_messages:
+        frames.append(("关闭 CAN 消息发送 0x04", protocol.set_can_messages_enabled(False)))
+    frames.append((f"升级相关信息 0x05 size={image.size}", protocol.set_firmware_size(image.size)))
+
+    first_section = image.sections(1024)[0]
+    frames.append((
+        f"首段段信息 0x06 section={first_section.number} size={len(first_section.data)}",
+        protocol.set_segment_info(section_num=first_section.number, section_size=len(first_section.data)),
+    ))
+    for index, frame in enumerate(protocol.segment_data_frames(first_section.data)[:max_data_frames], start=1):
+        frames.append((f"首段自升级数据包 {CMD_FILL_SEGMENT_DATA:#04x} #{index}", frame))
+    return frames
 
 
 class IapUpgradeController:
@@ -59,6 +99,7 @@ class IapUpgradeController:
         self.on_progress = on_progress or (lambda percent: None)
         self.on_frame = on_frame or (lambda direction, frame: None)
         self._cancel_event = Event()
+        self._last_ack_frame: CanFrame | None = None
 
     def cancel(self) -> None:
         self._cancel_event.set()
@@ -88,6 +129,8 @@ class IapUpgradeController:
         if role != RUN_ROLE_BOOTLOADER:
             raise RuntimeError("设备未进入 BOOT，停止升级")
 
+        if opts.disable_target_can_messages:
+            self._set_can_messages_enabled(False, opts)
         self._set_firmware_size(image, opts)
         sent_bytes = 0
         sections = image.sections(1024)
@@ -160,39 +203,88 @@ class IapUpgradeController:
         )
         self._log("APP 区擦除/固件大小设置完成")
 
-    def _send_segment(self, section_num: int, section_data: bytes, options: UpgradeOptions) -> None:
+    def _set_can_messages_enabled(self, enabled: bool, options: UpgradeOptions) -> None:
         self._retry_command(
-            lambda: self.protocol.set_segment_info(section_num=section_num, section_size=len(section_data)),
+            lambda: self.protocol.set_can_messages_enabled(enabled),
+            CMD_ENABLE_CAN,
+            options.ack_timeout_ms,
+            options.set_segment_retries,
+        )
+        self._log(f"目标设备 CAN 消息发送已{'打开' if enabled else '关闭'}")
+
+    def _send_segment(self, section_num: int, section_data: bytes, options: UpgradeOptions) -> None:
+        segment_info_frame = self.protocol.set_segment_info(section_num=section_num, section_size=len(section_data))
+        self._log(
+            f"发送段信息 0x06：段={section_num}, size={len(section_data)}, "
+            f"{self._format_frame_summary(segment_info_frame)}"
+        )
+        self._retry_command(
+            lambda: segment_info_frame,
             CMD_SET_SEGMENT_INFO,
             options.ack_timeout_ms,
             options.set_segment_retries,
         )
 
-        for frame in self.protocol.segment_data_frames(section_data):
+        for frame_index, frame in enumerate(self.protocol.segment_data_frames(section_data), start=1):
             self._check_cancelled()
-            self._send(frame)
+            self._log(
+                f"发送段数据 0x07：段={section_num}, 包={frame_index}, "
+                f"offset={(frame_index - 1) * 5}, {self._format_frame_summary(frame)}"
+            )
+            if options.wait_data_frame_ack:
+                try:
+                    self._command_with_ack(
+                        frame,
+                        CMD_FILL_SEGMENT_DATA,
+                        options.data_frame_ack_timeout_ms,
+                        accept_tx_can_id_ack=False,
+                    )
+                except RuntimeError as exc:
+                    raise RuntimeError(f"段 {section_num} 数据包 {frame_index} 等待 0x07 ACK 失败：{exc}") from exc
+            else:
+                self._send(frame)
             if options.data_frame_delay_ms > 0:
                 time.sleep(options.data_frame_delay_ms / 1000)
 
-        self._retry_validate_segment(section_num, section_data, options)
-        self._log(f"段 {section_num} 写入成功，size={len(section_data)}")
+        if self._retry_validate_segment(section_num, section_data, options):
+            self._log(f"段 {section_num} 写入成功，size={len(section_data)}")
+        else:
+            self._log(f"段 {section_num} 已忽略校验 ACK 失败，继续发送后续段")
 
-    def _retry_validate_segment(self, section_num: int, section_data: bytes, options: UpgradeOptions) -> None:
+    def _retry_validate_segment(self, section_num: int, section_data: bytes, options: UpgradeOptions) -> bool:
         last_error = ""
-        for _ in range(options.validate_segment_retries + 1):
+        attempts = 1 if options.ignore_validate_ack_failure else options.validate_segment_retries + 1
+        validate_timeout_ms = options.ack_timeout_ms if options.ignore_validate_ack_failure else options.write_timeout_ms
+        for _ in range(attempts):
             self._check_cancelled()
+            validate_frame = self.protocol.validate_segment(section_num, section_data)
+            crc = int.from_bytes(validate_frame.data[4:8], "big")
+            self._log(
+                f"发送段校验 0x08：段={section_num}, CRC32=0x{crc:08X}, "
+                f"{self._format_frame_summary(validate_frame)}"
+            )
             try:
                 ack = self._command_with_ack(
-                    self.protocol.validate_segment(section_num, section_data),
+                    validate_frame,
                     CMD_VALIDATE_SEGMENT_DATA,
-                    options.write_timeout_ms,
+                    validate_timeout_ms,
                 )
             except RuntimeError as exc:
                 last_error = str(exc)
+                if options.ignore_validate_ack_failure:
+                    self._log(f"忽略段 {section_num} 校验 ACK 错误，继续下一段：{last_error}")
+                    return False
                 continue
             if ack.params[0] == 1:
-                return
+                return True
+            self._log(
+                f"段 {section_num} 写入失败 ACK：byte3={ack.params[0]}, "
+                f"{self._format_last_ack_frame()}"
+            )
             last_error = f"段 {section_num} 写入失败，ACK byte3={ack.params[0]}"
+            if options.ignore_validate_ack_failure:
+                self._log(f"忽略段 {section_num} 校验失败 ACK，继续下一段：{last_error}")
+                return False
         raise RuntimeError(last_error)
 
     def _retry_command(
@@ -211,7 +303,14 @@ class IapUpgradeController:
                 last_error = exc
         raise RuntimeError(str(last_error) if last_error else "命令重试失败")
 
-    def _command_with_ack(self, frame: CanFrame, expected_cmd: int, timeout_ms: int) -> IapAck:
+    def _command_with_ack(
+        self,
+        frame: CanFrame,
+        expected_cmd: int,
+        timeout_ms: int,
+        accept_tx_can_id_ack: bool = True,
+    ) -> IapAck:
+        self._last_ack_frame = None
         self._send(frame)
         deadline = time.monotonic() + timeout_ms / 1000
         while True:
@@ -222,12 +321,44 @@ class IapUpgradeController:
             if ack_frame is None:
                 raise RuntimeError(f"等待 0x{expected_cmd:02X} ACK 超时")
             self.on_frame("RX", ack_frame)
-            if ack_frame.id != self.protocol.can_id:
+            ack_ids = (self.protocol.can_id, self.protocol.target_id) if accept_tx_can_id_ack else (self.protocol.target_id,)
+            if ack_frame.id not in ack_ids:
+                continue
+            if not self._is_expected_ack_frame(ack_frame, expected_cmd):
                 continue
             try:
-                return self.protocol.parse_ack(ack_frame.data, expected_cmd=expected_cmd)
+                ack = self.protocol.parse_ack(ack_frame.data, expected_cmd=expected_cmd)
+                self._last_ack_frame = ack_frame
+                return ack
             except ValueError as exc:
+                self._log(
+                    f"ACK 解析失败：expected=0x{expected_cmd:02X}, "
+                    f"RX ID=0x{ack_frame.id:X}, Len={ack_frame.dlc}, "
+                    f"Data={self._format_frame_data(ack_frame)}，原因：{exc}"
+                )
                 raise RuntimeError(str(exc)) from exc
+
+    def _is_expected_ack_frame(self, frame: CanFrame, expected_cmd: int) -> bool:
+        data = frame.data
+        return (
+            len(data) >= 3
+            and data[0] == PROTOCOL_HEAD
+            and data[1] == self.protocol.target_id
+            and data[2] == expected_cmd
+        )
+
+    def _format_last_ack_frame(self) -> str:
+        if self._last_ack_frame is None:
+            return "RX ACK 帧未记录"
+        frame = self._last_ack_frame
+        return f"RX {self._format_frame_summary(frame)}"
+
+    def _format_frame_summary(self, frame: CanFrame) -> str:
+        return f"ID=0x{frame.id:X}, Len={frame.dlc}, Data={self._format_frame_data(frame)}"
+
+    @staticmethod
+    def _format_frame_data(frame: CanFrame) -> str:
+        return bytes(frame.data[: frame.dlc]).hex(" ").upper()
 
     def _send(self, frame: CanFrame) -> None:
         self._check_cancelled()

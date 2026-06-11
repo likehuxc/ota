@@ -37,8 +37,12 @@ from PySide6.QtWidgets import (
 from d7_pmu_iap_tool.can.broker_can_driver import ZlgCanBrokerDriver
 from d7_pmu_iap_tool.can.can_frame import CanFrame
 from d7_pmu_iap_tool.iap.firmware_image import FirmwareImage
-from d7_pmu_iap_tool.iap.iap_protocol import IapProtocol
-from d7_pmu_iap_tool.iap.iap_upgrade_controller import IapUpgradeController, UpgradeOptions
+from d7_pmu_iap_tool.iap.iap_protocol import CMD_FILL_SEGMENT_DATA, IapProtocol
+from d7_pmu_iap_tool.iap.iap_upgrade_controller import (
+    IapUpgradeController,
+    UpgradeOptions,
+    build_upgrade_preview_frames,
+)
 
 # ZLG's 32-bit zlgcan.dll (loaded by the 32-bit broker subprocess). It pulls
 # device backends from the sibling kerneldlls\ folder.
@@ -54,12 +58,26 @@ class DeviceProfile:
     target_id: int
     can_id: int
     pre_upgrade_wakeup_ms: int = 0
+    disable_target_can_messages: bool = False
+    wait_data_frame_ack: bool = False
+    ignore_validate_ack_failure: bool = False
+    app_start_wait_ms: int = 1000
+    app_total_wait_ms: int = 5000
 
 
 DEVICE_PROFILES = (
     DeviceProfile("D7-CT01", 0x18, 0x7FF),
     DeviceProfile("D7-CT02", 0x19, 0x7FF),
-    DeviceProfile("D7-沛城电池", 0x41, 0x7FF, pre_upgrade_wakeup_ms=1000),
+    DeviceProfile(
+        "D7-沛城电池",
+        0x41,
+        0x7FF,
+        pre_upgrade_wakeup_ms=1000,
+        disable_target_can_messages=True,
+        ignore_validate_ack_failure=True,
+        app_start_wait_ms=10000,
+        app_total_wait_ms=25000,
+    ),
 )
 DEFAULT_DEVICE_PROFILE_NAME = "D7-CT02"
 
@@ -107,6 +125,7 @@ class Widget(QWidget):
         self.filter_can_ids: set[int] = set()
         self.can_filter_buttons: dict[int, QPushButton] = {}
         self._can_records: list[tuple[str, str, CanFrame]] = []
+        self._can_save_records: list[tuple[str, str, CanFrame]] = []
         self._rx_save_records: list[tuple[str, CanFrame]] = []
         self._can_display_paused = False
         self.selected_dll_path = DEFAULT_DLL_PATH
@@ -275,6 +294,9 @@ class Widget(QWidget):
         self.query_role_button.setObjectName("SecondaryButton")
         self.start_upgrade_button = QPushButton("开始升级")
         self.start_upgrade_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.simulate_battery_button = QPushButton("模拟电池升级")
+        self.simulate_battery_button.setObjectName("SecondaryButton")
+        self.simulate_battery_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.stop_button = QPushButton("停止升级")
         self.stop_button.setObjectName("SecondaryButton")
         self.stop_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop))
@@ -323,6 +345,7 @@ class Widget(QWidget):
 
         upgrade_actions = QHBoxLayout()
         upgrade_actions.addWidget(self.start_upgrade_button)
+        upgrade_actions.addWidget(self.simulate_battery_button)
         upgrade_actions.addWidget(self.stop_button)
         upgrade_actions.addStretch(1)
         upgrade_layout = QVBoxLayout()
@@ -509,13 +532,14 @@ class Widget(QWidget):
         self.close_button.clicked.connect(self.close_device)
         self.query_role_button.clicked.connect(self.query_role)
         self.start_upgrade_button.clicked.connect(self.start_upgrade)
+        self.simulate_battery_button.clicked.connect(self.simulate_battery_upgrade)
         self.stop_button.clicked.connect(self.stop_upgrade)
         self.dll_browse_button.clicked.connect(self._choose_dll)
         self.send_button.clicked.connect(self.send_can_frame)
         self.clear_can_button.clicked.connect(self.clear_can_frames)
         self.apply_filter_button.clicked.connect(self.apply_can_filter)
         self.pause_can_display_button.clicked.connect(self.toggle_can_display_pause)
-        self.save_rx_button.clicked.connect(self.save_rx_can_records)
+        self.save_rx_button.clicked.connect(self.save_can_records)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -1123,6 +1147,38 @@ class Widget(QWidget):
             self._upgrade_failed(str(exc))
 
     @Slot()
+    def simulate_battery_upgrade(self) -> None:
+        try:
+            self.error_box.hide()
+            image = self._load_firmware()
+            profile = self._battery_device_profile()
+            protocol = IapProtocol(target_id=profile.target_id, can_id=profile.can_id)
+            options = UpgradeOptions(
+                pre_upgrade_wakeup_ms=profile.pre_upgrade_wakeup_ms,
+                disable_target_can_messages=profile.disable_target_can_messages,
+                wait_data_frame_ack=profile.wait_data_frame_ack,
+                ignore_validate_ack_failure=profile.ignore_validate_ack_failure,
+            )
+            preview_frames = build_upgrade_preview_frames(protocol, image, options, max_data_frames=10)
+            data_frame_count = sum(
+                1 for _, frame in preview_frames if frame.data[2] == CMD_FILL_SEGMENT_DATA
+            )
+
+            self._log("模拟电池升级：忽略 ACK，仅打印将发送的 CAN 帧")
+            self._log(
+                f"模拟配置：{profile.name}, CANID=0x{profile.can_id:X}, "
+                f"目标ID=0x{profile.target_id:02X}, 固件大小={image.size} bytes"
+            )
+            for index, (label, frame) in enumerate(preview_frames, start=1):
+                self._log(
+                    f"模拟TX[{index:02d}] {label}：ID=0x{frame.id:X}, "
+                    f"Len={frame.dlc}, Data={self._format_frame_data(frame)}"
+                )
+            self._log(f"模拟电池升级：已打印首段自升级数据包前 {data_frame_count} 包")
+        except Exception as exc:
+            self._show_error(str(exc))
+
+    @Slot()
     def stop_upgrade(self) -> None:
         if self.upgrade_worker:
             self.upgrade_worker.cancel()
@@ -1187,6 +1243,10 @@ class Widget(QWidget):
             return profile
         return next(profile for profile in DEVICE_PROFILES if profile.name == DEFAULT_DEVICE_PROFILE_NAME)
 
+    @staticmethod
+    def _battery_device_profile() -> DeviceProfile:
+        return next(profile for profile in DEVICE_PROFILES if "电池" in profile.name)
+
     def _apply_device_profile(self, profile: DeviceProfile) -> None:
         self.target_id_input.setText(self._format_can_id(profile.target_id))
         self.can_id_input.setText(self._format_can_id(profile.can_id))
@@ -1222,6 +1282,11 @@ class Widget(QWidget):
             channel=self.channel_input.currentData(),
             baudrate=self.baudrate_input.currentData(),
             pre_upgrade_wakeup_ms=self._selected_device_profile().pre_upgrade_wakeup_ms,
+            disable_target_can_messages=self._selected_device_profile().disable_target_can_messages,
+            wait_data_frame_ack=self._selected_device_profile().wait_data_frame_ack,
+            ignore_validate_ack_failure=self._selected_device_profile().ignore_validate_ack_failure,
+            app_start_wait_ms=self._selected_device_profile().app_start_wait_ms,
+            app_total_wait_ms=self._selected_device_profile().app_total_wait_ms,
         )
 
     def _load_firmware(self) -> FirmwareImage:
@@ -1258,6 +1323,7 @@ class Widget(QWidget):
             self.can_poll_timer.start()
 
         self.start_upgrade_button.setEnabled(not busy and self._can_connected)
+        self.simulate_battery_button.setEnabled(not busy)
         self.open_button.setEnabled(not busy and not self._can_connected)
         self.close_button.setEnabled(not busy and self._can_connected)
         self.query_role_button.setEnabled(not busy and self._can_connected)
@@ -1294,6 +1360,7 @@ class Widget(QWidget):
         popped_record: tuple[str, str, CanFrame] | None = None
         if direction == "RX":
             self._rx_save_records.append((timestamp, frame))
+        self._can_save_records.append((direction, timestamp, frame))
         self._can_records.append((direction, timestamp, frame))
         if len(self._can_records) > MAX_CAN_ROWS:
             popped_record = self._can_records.pop(0)
@@ -1373,30 +1440,37 @@ class Widget(QWidget):
     @Slot()
     def clear_can_frames(self) -> None:
         self._can_records.clear()
+        self._can_save_records.clear()
         self._rx_save_records.clear()
         self.can_table.setRowCount(0)
         self._update_filter_status(0)
         self.rx_count_value.setText("0 帧")
 
     @Slot()
-    def save_rx_can_records(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "保存 CAN 接收数据", "can_rx.csv", "CSV (*.csv);;All files (*.*)")
+    def save_can_records(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "保存 CAN 数据", "can.csv", "CSV (*.csv);;All files (*.*)")
         if not path:
             return
         try:
-            saved_count = self._save_rx_can_records(Path(path))
+            saved_count = self._save_can_records(Path(path))
         except Exception as exc:
             self._show_error(str(exc))
             return
-        self._log(f"已保存 CAN 接收数据：{saved_count} 帧，{path}")
+        self._log(f"已保存 CAN 数据：{saved_count} 帧，{path}")
 
-    def _save_rx_can_records(self, path: str | Path) -> int:
+    def save_rx_can_records(self) -> None:
+        self.save_can_records()
+
+    def _save_can_records(self, path: str | Path) -> int:
         with Path(path).open("w", newline="", encoding="utf-8") as output:
             writer = csv.writer(output)
             writer.writerow(["direction", "time", "canid", "len", "data"])
-            for timestamp, frame in self._rx_save_records:
-                writer.writerow(["RX", timestamp, f"0x{frame.id:X}", frame.dlc, self._format_frame_data(frame)])
-        return len(self._rx_save_records)
+            for direction, timestamp, frame in self._can_save_records:
+                writer.writerow([direction, timestamp, f"0x{frame.id:X}", frame.dlc, self._format_frame_data(frame)])
+        return len(self._can_save_records)
+
+    def _save_rx_can_records(self, path: str | Path) -> int:
+        return self._save_can_records(path)
 
     def _sync_filter_input(self) -> None:
         self.can_filter_input.setText(", ".join(f"0x{can_id:X}" for can_id in sorted(self.filter_can_ids)))
