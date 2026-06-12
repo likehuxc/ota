@@ -364,8 +364,14 @@ class Widget(QWidget):
         self.log_output.setReadOnly(True)
         self.log_output.setObjectName("LogOutput")
         self.system_log_group = QGroupBox("系统日志")
+        self.save_log_button = QPushButton("导出日志")
+        self.save_log_button.setObjectName("SecondaryButton")
+        log_toolbar = QHBoxLayout()
+        log_toolbar.addStretch(1)
+        log_toolbar.addWidget(self.save_log_button)
         system_log_layout = QVBoxLayout()
         system_log_layout.setContentsMargins(16, 18, 16, 16)
+        system_log_layout.addLayout(log_toolbar)
         system_log_layout.addWidget(self.log_output)
         self._set_card_layout(self.system_log_group, system_log_layout)
 
@@ -540,6 +546,7 @@ class Widget(QWidget):
         self.apply_filter_button.clicked.connect(self.apply_can_filter)
         self.pause_can_display_button.clicked.connect(self.toggle_can_display_pause)
         self.save_rx_button.clicked.connect(self.save_can_records)
+        self.save_log_button.clicked.connect(self.save_system_log)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -1213,7 +1220,6 @@ class Widget(QWidget):
             if not driver.send(frame):
                 raise RuntimeError(driver.last_error)
             self._append_can_frame("TX", frame)
-            self._log(f"发送 CAN：ID=0x{frame.id:X}, Len={frame.dlc}, Data={self._format_frame_data(frame)}")
         except Exception as exc:
             self._show_error(str(exc))
 
@@ -1357,6 +1363,11 @@ class Widget(QWidget):
 
     def _append_can_frame(self, direction: str, frame: CanFrame) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        if direction == "TX":
+            self._log(
+                f"[{timestamp}] {direction} ID=0x{frame.id:X}, "
+                f"Len={frame.dlc}, Data={self._format_frame_data(frame)}"
+            )
         popped_record: tuple[str, str, CanFrame] | None = None
         if direction == "RX":
             self._rx_save_records.append((timestamp, frame))
@@ -1457,6 +1468,23 @@ class Widget(QWidget):
             self._show_error(str(exc))
             return
         self._log(f"已保存 CAN 数据：{saved_count} 帧，{path}")
+
+    @Slot()
+    def save_system_log(self) -> None:
+        text = self.log_output.toPlainText()
+        if not text:
+            self._show_information("导出日志", "系统日志为空，无可导出内容。")
+            return
+        default_name = f"system_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        path, _ = QFileDialog.getSaveFileName(self, "导出系统日志", default_name, "文本 (*.txt);;All files (*.*)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+        except Exception as exc:
+            self._show_error(str(exc))
+            return
+        self._log(f"已导出系统日志：{path}")
 
     def save_rx_can_records(self) -> None:
         self.save_can_records()

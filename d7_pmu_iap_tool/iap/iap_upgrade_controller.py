@@ -214,10 +214,6 @@ class IapUpgradeController:
 
     def _send_segment(self, section_num: int, section_data: bytes, options: UpgradeOptions) -> None:
         segment_info_frame = self.protocol.set_segment_info(section_num=section_num, section_size=len(section_data))
-        self._log(
-            f"发送段信息 0x06：段={section_num}, size={len(section_data)}, "
-            f"{self._format_frame_summary(segment_info_frame)}"
-        )
         self._retry_command(
             lambda: segment_info_frame,
             CMD_SET_SEGMENT_INFO,
@@ -227,10 +223,6 @@ class IapUpgradeController:
 
         for frame_index, frame in enumerate(self.protocol.segment_data_frames(section_data), start=1):
             self._check_cancelled()
-            self._log(
-                f"发送段数据 0x07：段={section_num}, 包={frame_index}, "
-                f"offset={(frame_index - 1) * 5}, {self._format_frame_summary(frame)}"
-            )
             if options.wait_data_frame_ack:
                 try:
                     self._command_with_ack(
@@ -258,11 +250,6 @@ class IapUpgradeController:
         for _ in range(attempts):
             self._check_cancelled()
             validate_frame = self.protocol.validate_segment(section_num, section_data)
-            crc = int.from_bytes(validate_frame.data[4:8], "big")
-            self._log(
-                f"发送段校验 0x08：段={section_num}, CRC32=0x{crc:08X}, "
-                f"{self._format_frame_summary(validate_frame)}"
-            )
             try:
                 ack = self._command_with_ack(
                     validate_frame,

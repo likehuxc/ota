@@ -240,16 +240,22 @@ class UpgradeControllerTests(unittest.TestCase):
             ack(CMD_VALIDATE_SEGMENT_DATA, b"\x01\x00\x00\x00"),
             ack(CMD_GET_RUN_ROLE, b"\x00\x00\x00\x00"),
         ]
-        logs = []
-        controller = IapUpgradeController(FakeCanDriver(replies), protocol, on_log=logs.append)
+        tx_frames = []
+        controller = IapUpgradeController(
+            FakeCanDriver(replies),
+            protocol,
+            on_frame=lambda direction, frame: tx_frames.append(frame) if direction == "TX" else None,
+        )
 
         controller.upgrade(image, UpgradeOptions(app_start_wait_ms=0, data_frame_delay_ms=0))
 
-        log_text = "\n".join(logs)
-        self.assertIn("发送段信息 0x06：段=0, size=12, ID=0x7FF, Len=8, Data=16 19 06 00 0C 00 00 41", log_text)
-        self.assertIn("发送段数据 0x07：段=0, 包=1, offset=0, ID=0x7FF, Len=8, Data=16 19 07 00 10 00 20 C9", log_text)
-        self.assertIn("发送段数据 0x07：段=0, 包=3, offset=10, ID=0x7FF, Len=8, Data=16 19 07 03 04 00 00 00", log_text)
-        self.assertIn(f"发送段校验 0x08：段=0, CRC32=0x{expected_crc:08X}", log_text)
+        sent = [bytes(frame.data[: frame.dlc]) for frame in tx_frames]
+        self.assertIn(bytes.fromhex("16 19 06 00 0C 00 00 41".replace(" ", "")), sent)
+        self.assertIn(bytes.fromhex("16 19 07 00 10 00 20 C9".replace(" ", "")), sent)
+        self.assertIn(bytes.fromhex("16 19 07 03 04 00 00 00".replace(" ", "")), sent)
+        validate_tx = [f for f in tx_frames if f.data[2] == CMD_VALIDATE_SEGMENT_DATA]
+        self.assertTrue(validate_tx)
+        self.assertEqual(int.from_bytes(validate_tx[0].data[4:8], "big"), expected_crc)
 
     def test_ignores_echoed_data_frames_while_waiting_for_validate_ack(self):
         image = FirmwareImage.from_bytes(struct.pack("<II", 0x20001000, 0x000202C9) + b"\x01\x02\x03\x04")

@@ -1,1 +1,6 @@
-PySide6
+# GUI（64 位 Python 安装这些）。版本锁定为开发者本机实测可用版本。
+# broker（32 位 Python）只用标准库，无需安装任何包。
+PySide6==6.11.1
+PySide6_Addons==6.11.1
+PySide6_Essentials==6.11.1
+shiboken6==6.11.1
