@@ -11,4 +11,6 @@ files = [
     "d7_pmu_iap_tool/iap/firmware_image.py",
     "d7_pmu_iap_tool/iap/iap_protocol.py",
     "d7_pmu_iap_tool/iap/iap_upgrade_controller.py",
+    "d7_pmu_iap_tool/motor_protocol.py",
+    "d7_pmu_iap_tool/motor_test_page.py",
 ]

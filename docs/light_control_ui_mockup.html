@@ -1,0 +1,1478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D7 CAN 灯控调试台 · UI 提案</title>
+<style>
+  :root {
+    --bg: #e8edf4;
+    --window: #f6f8fb;
+    --panel: #ffffff;
+    --panel-soft: #f3f6fa;
+    --line: #dce3ec;
+    --line-strong: #c9d3df;
+    --ink: #101828;
+    --ink-2: #344054;
+    --muted: #667085;
+    --muted-2: #98a2b3;
+    --navy: #0d1726;
+    --deep: #10283a;
+    --blue: #2764e6;
+    --blue-soft: #eaf1ff;
+    --cyan: #0ea5c6;
+    --green: #12a06a;
+    --green-soft: #e8f7f1;
+    --amber: #ffb02e;
+    --amber-soft: #fff5df;
+    --red: #d92d20;
+    --red-soft: #fff1f0;
+    --mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+    --sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    --shadow: 0 16px 42px rgba(16, 24, 40, .14);
+    --panel-shadow: 0 1px 2px rgba(16, 24, 40, .05);
+    --radius: 8px;
+    --light-alpha: .78;
+    --light-temp: 4300;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    color: var(--ink);
+    background:
+      linear-gradient(135deg, rgba(13, 23, 38, .95), rgba(24, 64, 73, .88)),
+      repeating-linear-gradient(90deg, rgba(255, 255, 255, .05) 0 1px, transparent 1px 46px);
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+
+  button {
+    border: 0;
+  }
+
+  .app-window {
+    width: min(1400px, calc(100vw - 32px));
+    height: min(920px, calc(100vh - 32px));
+    min-height: 780px;
+    background: var(--window);
+    border: 1px solid rgba(255, 255, 255, .4);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .titlebar {
+    height: 34px;
+    flex: 0 0 34px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    color: #98a2b3;
+    background: #f7f9fc;
+    border-bottom: 1px solid #e5eaf0;
+    font-size: 12px;
+  }
+
+  .titlebar-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .app-icon {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    background:
+      linear-gradient(90deg, #ecfdf3 0 45%, transparent 45%),
+      linear-gradient(135deg, #0ea5c6, #2764e6);
+    border: 1px solid #b8c4d2;
+  }
+
+  .window-controls {
+    display: flex;
+    gap: 24px;
+    font-size: 14px;
+    color: #667085;
+  }
+
+  .topbar {
+    flex: 0 0 auto;
+    padding: 18px 30px;
+    background:
+      linear-gradient(112deg, #0d1726 0%, #10283a 58%, #17444c 100%);
+    color: #ffffff;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 24px;
+    align-items: center;
+  }
+
+  .brand-lockup {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 360px;
+  }
+
+  .brand-mark {
+    width: 52px;
+    height: 52px;
+    border-radius: 12px;
+    background: linear-gradient(145deg, #2764e6 0%, #0ea5c6 55%, #ffb02e 100%);
+    display: grid;
+    place-items: center;
+    font-weight: 900;
+    letter-spacing: .04em;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .25), 0 12px 28px rgba(14, 165, 198, .28);
+  }
+
+  .brand-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .brand-copy h1 {
+    margin: 0;
+    font-size: 28px;
+    line-height: 1;
+    letter-spacing: .01em;
+  }
+
+  .device-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .select-shell,
+  .mini-select {
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    border-radius: var(--radius);
+    background: rgba(255, 255, 255, .1);
+    border: 1px solid rgba(255, 255, 255, .22);
+    color: #e8f3f7;
+    font-weight: 700;
+    min-width: 150px;
+    justify-content: space-between;
+  }
+
+  .mini-select {
+    min-width: 116px;
+    background: rgba(255, 176, 46, .12);
+    border-color: rgba(255, 176, 46, .34);
+    color: #ffe7b3;
+  }
+
+  .mode-rail {
+    justify-self: center;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .08);
+    border: 1px solid rgba(255, 255, 255, .14);
+  }
+
+  .mode-btn {
+    height: 36px;
+    min-width: 106px;
+    padding: 0 16px;
+    border-radius: 7px;
+    color: #b9c8d6;
+    background: transparent;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .mode-btn.active {
+    color: #111827;
+    background: #fff;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, .18);
+  }
+
+  .connection-badge {
+    justify-self: end;
+    height: 58px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 18px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .1);
+    border: 1px solid rgba(255, 255, 255, .18);
+    color: #ecfdf3;
+    font-weight: 800;
+    min-width: 178px;
+  }
+
+  .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 0 5px rgba(18, 160, 106, .18);
+  }
+
+  .content {
+    flex: 1;
+    min-height: 0;
+    padding: 22px 28px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, .42), transparent 170px),
+      var(--bg);
+  }
+
+  .status-strip {
+    flex: 0 0 auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--panel-shadow);
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    overflow: hidden;
+  }
+
+  .strip-item {
+    min-height: 76px;
+    padding: 14px 18px;
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .strip-item:last-child {
+    border-right: 0;
+  }
+
+  .strip-label {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .strip-value {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 900;
+    color: var(--ink);
+  }
+
+  .strip-value.good {
+    color: #067647;
+  }
+
+  .strip-value.warn {
+    color: #b54708;
+  }
+
+  .workspace {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(500px, .96fr) minmax(560px, 1.04fr);
+    gap: 18px;
+  }
+
+  .stack {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--panel-shadow);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel-head {
+    min-height: 52px;
+    padding: 0 18px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid #edf1f5;
+    background: linear-gradient(180deg, #fff, #fbfcfe);
+  }
+
+  .panel-head h2 {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1;
+    letter-spacing: .01em;
+  }
+
+  .head-mark {
+    width: 4px;
+    height: 18px;
+    border-radius: 3px;
+    background: var(--blue);
+  }
+
+  .head-tools {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .panel-body {
+    padding: 18px 20px;
+  }
+
+  .field-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+
+  .field-grid.two {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .field label,
+  .control-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 7px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .input,
+  .select-like {
+    height: 40px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: #fff;
+    color: var(--ink);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 0 12px;
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 800;
+  }
+
+  .select-like {
+    font-family: var(--sans);
+  }
+
+  .input.muted {
+    color: var(--muted-2);
+    font-family: var(--sans);
+    font-weight: 700;
+  }
+
+  .button-row {
+    margin-top: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .hint {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .btn {
+    height: 38px;
+    padding: 0 14px;
+    border-radius: var(--radius);
+    background: var(--blue);
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-weight: 900;
+    cursor: pointer;
+    border: 1px solid var(--blue);
+    transition: transform .16s ease, box-shadow .16s ease, background .16s ease;
+  }
+
+  .btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 18px rgba(39, 100, 230, .22);
+  }
+
+  .btn.secondary {
+    color: var(--ink-2);
+    background: #fff;
+    border-color: var(--line-strong);
+  }
+
+  .btn.secondary:hover {
+    box-shadow: 0 8px 18px rgba(16, 24, 40, .08);
+  }
+
+  .btn.danger {
+    background: #fff;
+    border-color: #f2b8b5;
+    color: var(--red);
+  }
+
+  .btn.danger:hover {
+    box-shadow: 0 8px 18px rgba(217, 45, 32, .12);
+    background: var(--red-soft);
+  }
+
+  [data-lucide] {
+    width: 16px;
+    height: 16px;
+    stroke-width: 2.4;
+  }
+
+  .light-panel {
+    flex: 1;
+    min-height: 344px;
+  }
+
+  .light-body {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 20px;
+    padding: 18px 20px 20px;
+  }
+
+  .lamp-stage {
+    position: relative;
+    min-height: 300px;
+    border: 1px solid #d8e1eb;
+    border-radius: var(--radius);
+    background:
+      linear-gradient(180deg, #111a2b 0%, #162336 60%, #1c2939 100%);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 18px;
+  }
+
+  .lamp-stage::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(90deg, transparent 0 16%, rgba(255, 255, 255, .035) 16% 17%, transparent 17% 50%, rgba(255, 255, 255, .035) 50% 51%, transparent 51% 84%, rgba(255, 255, 255, .035) 84% 85%, transparent 85%);
+    pointer-events: none;
+  }
+
+  .beam {
+    position: absolute;
+    width: 168px;
+    height: 168px;
+    border-radius: 50%;
+    left: 46px;
+    top: 34px;
+    opacity: var(--light-alpha);
+    background:
+      radial-gradient(circle at center, rgba(255, 220, 136, .94) 0 9%, rgba(255, 176, 46, .46) 30%, rgba(255, 176, 46, .08) 62%, transparent 70%);
+    filter: blur(.2px);
+    transform: scale(1.04);
+  }
+
+  .beam.cool {
+    opacity: calc(var(--light-alpha) * .7);
+    background:
+      radial-gradient(circle at center, rgba(226, 247, 255, .84) 0 8%, rgba(46, 177, 218, .36) 31%, rgba(46, 177, 218, .08) 60%, transparent 72%);
+    transform: translate(24px, 18px) scale(.82);
+  }
+
+  .lamp-housing {
+    position: relative;
+    z-index: 1;
+    border: 1px solid rgba(255, 255, 255, .16);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .08);
+    padding: 14px;
+    backdrop-filter: blur(8px);
+  }
+
+  .lamp-name {
+    color: #fff;
+    font-size: 16px;
+    font-weight: 900;
+    margin-bottom: 12px;
+  }
+
+  .lamp-bars {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    height: 96px;
+    align-items: end;
+  }
+
+  .lamp-bar {
+    border-radius: 5px 5px 2px 2px;
+    background: linear-gradient(180deg, #fff1bd, #ffb02e);
+    box-shadow: 0 0 22px rgba(255, 176, 46, .45);
+  }
+
+  .lamp-bar:nth-child(1) {
+    height: 70%;
+  }
+
+  .lamp-bar:nth-child(2) {
+    height: 86%;
+  }
+
+  .lamp-bar:nth-child(3) {
+    height: 76%;
+  }
+
+  .lamp-bar:nth-child(4) {
+    height: 58%;
+    opacity: .66;
+  }
+
+  .lamp-footer {
+    margin-top: 12px;
+    color: #b9c8d6;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .control-stack {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .target-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  .switch-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #edf1f5;
+  }
+
+  .switch-title {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .switch-title strong {
+    font-size: 18px;
+  }
+
+  .switch-title span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .toggle {
+    position: relative;
+    width: 58px;
+    height: 32px;
+  }
+
+  .toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .toggle span {
+    position: absolute;
+    inset: 0;
+    border-radius: 18px;
+    background: #d0d5dd;
+    cursor: pointer;
+    transition: background .2s ease;
+  }
+
+  .toggle span::after {
+    content: "";
+    width: 26px;
+    height: 26px;
+    position: absolute;
+    left: 3px;
+    top: 3px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 2px 6px rgba(16, 24, 40, .25);
+    transition: transform .2s ease;
+  }
+
+  .toggle input:checked + span {
+    background: var(--green);
+  }
+
+  .toggle input:checked + span::after {
+    transform: translateX(26px);
+  }
+
+  .segmented {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
+  }
+
+  .segmented button {
+    height: 36px;
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--ink-2);
+    font-weight: 900;
+    cursor: pointer;
+  }
+
+  .segmented button.active {
+    border-color: #fedf89;
+    background: var(--amber-soft);
+    color: #93370d;
+  }
+
+  .range-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 150px;
+    gap: 14px;
+  }
+
+  .range-control {
+    min-width: 0;
+  }
+
+  .range-control output {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink);
+    font-weight: 900;
+  }
+
+  input[type="range"] {
+    width: 100%;
+    accent-color: var(--amber);
+  }
+
+  .stepper-input {
+    height: 40px;
+    display: grid;
+    grid-template-columns: 36px 1fr 36px;
+    align-items: center;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .stepper-input button {
+    height: 100%;
+    background: #f2f4f7;
+    color: var(--ink-2);
+    font-weight: 900;
+    cursor: pointer;
+  }
+
+  .stepper-input span {
+    text-align: center;
+    font-family: var(--mono);
+    font-weight: 900;
+  }
+
+  .channel-list {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+
+  .channel {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 10px;
+    background: #fbfcfe;
+  }
+
+  .channel strong {
+    display: block;
+    font-size: 13px;
+    margin-bottom: 6px;
+  }
+
+  .level {
+    height: 6px;
+    border-radius: 5px;
+    background: #eaecf0;
+    overflow: hidden;
+  }
+
+  .level span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--amber), #0ea5c6);
+  }
+
+  .channel em {
+    display: block;
+    margin-top: 6px;
+    color: var(--muted);
+    font-style: normal;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 800;
+  }
+
+  .status-table {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .status-cell {
+    min-height: 68px;
+    padding: 12px 14px;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    background: #fbfcfe;
+  }
+
+  .status-cell:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .status-cell:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .status-cell span {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+    margin-bottom: 6px;
+  }
+
+  .status-cell strong {
+    display: block;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 14px;
+    word-break: break-all;
+  }
+
+  .status-cell strong.text {
+    font-family: var(--sans);
+  }
+
+  .send-grid {
+    display: grid;
+    grid-template-columns: 148px 1fr auto auto;
+    gap: 12px;
+    align-items: end;
+  }
+
+  .monitor-panel {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .monitor-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 8px;
+  }
+
+  .tab {
+    height: 34px;
+    padding: 0 14px;
+    border: 1px solid var(--line);
+    border-radius: 17px;
+    background: #fff;
+    color: var(--muted);
+    font-weight: 900;
+    cursor: pointer;
+  }
+
+  .tab.active {
+    border-color: #bcd2ff;
+    background: var(--blue-soft);
+    color: var(--blue);
+  }
+
+  .filter-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 10px;
+  }
+
+  .can-table {
+    flex: 1;
+    min-height: 180px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #fff;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  thead {
+    background: #f3f6fa;
+  }
+
+  th {
+    text-align: left;
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 12px;
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  td {
+    padding: 8px 10px;
+    color: var(--ink-2);
+    border-bottom: 1px solid #edf1f5;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  tbody tr:nth-child(even) {
+    background: #fbfcfe;
+  }
+
+  .dir {
+    display: inline-flex;
+    min-width: 34px;
+    justify-content: center;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 900;
+  }
+
+  .dir.rx {
+    color: #175cd3;
+    background: #eff4ff;
+  }
+
+  .dir.tx {
+    color: #b54708;
+    background: #fffaeb;
+  }
+
+  .terminal {
+    flex: 0 0 186px;
+    min-height: 150px;
+    background: #0b1220;
+    color: #b8c6dc;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, .08);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .terminal-head {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, .07);
+  }
+
+  .terminal-head h2 {
+    margin: 0;
+    color: #e5edf7;
+    font-size: 15px;
+  }
+
+  .terminal-head .head-mark {
+    background: var(--cyan);
+  }
+
+  .terminal-clear {
+    margin-left: auto;
+    color: #7b8ba4;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .terminal-body {
+    flex: 1;
+    overflow: auto;
+    padding: 10px 16px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.68;
+  }
+
+  .terminal-body .time {
+    color: #667085;
+  }
+
+  .terminal-body .ok {
+    color: #5ee0a3;
+  }
+
+  .terminal-body .info {
+    color: #7dd3fc;
+  }
+
+  .terminal-body .warn {
+    color: #ffd166;
+  }
+
+  @media (max-width: 1180px) {
+    body {
+      padding: 0;
+    }
+
+    .app-window {
+      width: 100vw;
+      height: 100vh;
+      min-height: 760px;
+      border-radius: 0;
+    }
+
+    .workspace {
+      grid-template-columns: 1fr;
+      overflow: auto;
+    }
+
+    .topbar {
+      grid-template-columns: 1fr;
+    }
+
+    .mode-rail,
+    .connection-badge {
+      justify-self: stretch;
+    }
+
+    .status-strip {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .light-body {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+</head>
+<body>
+  <div class="app-window">
+    <div class="titlebar">
+      <div class="titlebar-title"><span class="app-icon"></span> D7 CAN 灯控调试台</div>
+      <div class="window-controls"><span>－</span><span>□</span><span>×</span></div>
+    </div>
+
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark">D7</div>
+        <div class="brand-copy">
+          <h1>D7 CAN 控制台</h1>
+          <div class="device-row">
+            <div class="select-shell">D7-CT02 <i data-lucide="chevron-down"></i></div>
+            <div class="mini-select">灯控 <i data-lucide="chevron-down"></i></div>
+          </div>
+        </div>
+      </div>
+
+      <nav class="mode-rail" aria-label="功能模式">
+        <button class="mode-btn">设备通讯</button>
+        <button class="mode-btn active">灯控调试</button>
+        <button class="mode-btn">CAN 工具</button>
+      </nav>
+
+      <div class="connection-badge">
+        <span class="status-dot"></span>
+        <span>已连接<br><small>CH0 · 1,000,000 bps</small></span>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="status-strip" aria-label="运行状态摘要">
+        <div class="strip-item">
+          <span class="strip-label">当前功能</span>
+          <span class="strip-value"><i data-lucide="lightbulb"></i> 灯控调试</span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">目标灯组</span>
+          <span class="strip-value warn">前舱氛围灯</span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">总线负载</span>
+          <span class="strip-value">18%</span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">最近应答</span>
+          <span class="strip-value good" id="ackValue">42 ms</span>
+        </div>
+        <div class="strip-item">
+          <span class="strip-label">最后命令</span>
+          <span class="strip-value" id="lastCommand">SET_BRIGHTNESS</span>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="stack">
+          <section class="panel">
+            <div class="panel-head">
+              <span class="head-mark"></span>
+              <h2>设备连接</h2>
+            </div>
+            <div class="panel-body">
+              <div class="field-grid">
+                <div class="field">
+                  <label>通道</label>
+                  <div class="select-like">CH0 <i data-lucide="chevron-down"></i></div>
+                </div>
+                <div class="field">
+                  <label>波特率</label>
+                  <div class="select-like">1,000,000 <i data-lucide="chevron-down"></i></div>
+                </div>
+                <div class="field">
+                  <label>目标 ID</label>
+                  <div class="input">0x19</div>
+                </div>
+                <div class="field">
+                  <label>控制 CAN ID</label>
+                  <div class="input">0x41</div>
+                </div>
+              </div>
+              <div class="button-row">
+                <button class="btn"><i data-lucide="plug-zap"></i>打开设备</button>
+                <button class="btn danger"><i data-lucide="power-off"></i>关闭设备</button>
+                <span class="hint">灯控参数下发前保持链路稳定</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel light-panel">
+            <div class="panel-head">
+              <span class="head-mark"></span>
+              <h2>灯控控制台</h2>
+              <div class="head-tools">
+                <button class="btn secondary"><i data-lucide="rotate-cw"></i>读取状态</button>
+              </div>
+            </div>
+            <div class="light-body">
+              <div class="lamp-stage" id="lampStage">
+                <div class="beam"></div>
+                <div class="beam cool"></div>
+                <div class="lamp-housing">
+                  <div class="lamp-name">前舱氛围灯</div>
+                  <div class="lamp-bars">
+                    <span class="lamp-bar"></span>
+                    <span class="lamp-bar"></span>
+                    <span class="lamp-bar"></span>
+                    <span class="lamp-bar"></span>
+                  </div>
+                  <div class="lamp-footer">0x41 · 4 channels · ACK OK</div>
+                </div>
+              </div>
+
+              <div class="control-stack">
+                <div class="target-row">
+                  <div class="field">
+                    <label>灯组</label>
+                    <div class="select-like">前舱氛围灯 <i data-lucide="chevron-down"></i></div>
+                  </div>
+                  <div class="field">
+                    <label>控制策略</label>
+                    <div class="select-like">同步下发 <i data-lucide="chevron-down"></i></div>
+                  </div>
+                </div>
+
+                <div class="switch-line">
+                  <div class="switch-title">
+                    <strong>主开关</strong>
+                    <span id="masterState">当前输出开启，支持实时调光</span>
+                  </div>
+                  <label class="toggle">
+                    <input id="masterSwitch" type="checkbox" checked>
+                    <span></span>
+                  </label>
+                </div>
+
+                <div>
+                  <label class="control-label">场景模式</label>
+                  <div class="segmented" id="modeGroup">
+                    <button class="active">常亮</button>
+                    <button>呼吸</button>
+                    <button>闪烁</button>
+                    <button>迎宾</button>
+                    <button>自定义</button>
+                  </div>
+                </div>
+
+                <div class="range-grid">
+                  <div class="range-control">
+                    <label class="control-label">亮度 <output id="brightnessValue">72%</output></label>
+                    <input id="brightnessRange" type="range" min="0" max="100" value="72">
+                  </div>
+                  <div class="range-control">
+                    <label class="control-label">色温 <output id="tempValue">4300K</output></label>
+                    <input id="tempRange" type="range" min="2700" max="6500" step="100" value="4300">
+                  </div>
+                  <div class="range-control">
+                    <label class="control-label">渐变时间</label>
+                    <div class="stepper-input">
+                      <button type="button" id="fadeMinus">−</button>
+                      <span id="fadeValue">320ms</span>
+                      <button type="button" id="fadePlus">+</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="control-label">通道输出</label>
+                  <div class="channel-list">
+                    <div class="channel">
+                      <strong>前左</strong>
+                      <div class="level"><span style="width: 74%"></span></div>
+                      <em>74%</em>
+                    </div>
+                    <div class="channel">
+                      <strong>前右</strong>
+                      <div class="level"><span style="width: 82%"></span></div>
+                      <em>82%</em>
+                    </div>
+                    <div class="channel">
+                      <strong>后左</strong>
+                      <div class="level"><span style="width: 66%"></span></div>
+                      <em>66%</em>
+                    </div>
+                    <div class="channel">
+                      <strong>后右</strong>
+                      <div class="level"><span style="width: 54%"></span></div>
+                      <em>54%</em>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="button-row">
+                  <button class="btn" id="sendLight"><i data-lucide="send"></i>下发灯控</button>
+                  <button class="btn secondary"><i data-lucide="copy-check"></i>保存预设</button>
+                  <button class="btn danger" id="allOff"><i data-lucide="moon"></i>全部熄灭</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="terminal">
+            <div class="terminal-head">
+              <span class="head-mark"></span>
+              <h2>系统日志</h2>
+              <span class="terminal-clear" id="clearLog">清空</span>
+            </div>
+            <div class="terminal-body" id="systemLog">
+              <div><span class="time">15:18:02.104</span> <span class="info">CAN 设备已打开：CH0，1000000 bps</span></div>
+              <div><span class="time">15:18:02.231</span> 灯控模块进入在线状态，目标 ID：0x19，控制 CAN ID：0x41</div>
+              <div><span class="time">15:18:03.018</span> <span class="ok">读取前舱氛围灯状态成功：亮度 72%，色温 4300K</span></div>
+              <div><span class="time">15:18:05.447</span> 下发场景：常亮，渐变时间 320ms</div>
+              <div><span class="time">15:18:05.489</span> <span class="ok">ACK OK，延迟 42 ms</span></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="stack">
+          <section class="panel">
+            <div class="panel-head">
+              <span class="head-mark"></span>
+              <h2>设备状态</h2>
+            </div>
+            <div class="panel-body">
+              <div class="status-table">
+                <div class="status-cell">
+                  <span>固定设备</span>
+                  <strong class="text">USBCAN-I · Index 0</strong>
+                </div>
+                <div class="status-cell">
+                  <span>接收帧数</span>
+                  <strong id="rxCount">1,284 帧</strong>
+                </div>
+                <div class="status-cell">
+                  <span>灯控反馈</span>
+                  <strong class="text">在线 · 无错误码</strong>
+                </div>
+                <div class="status-cell">
+                  <span>当前 DLL</span>
+                  <strong>C:\Program Files (x86)\ZCANPRO\zlgcan.dll</strong>
+                </div>
+                <div class="status-cell">
+                  <span>最后通道</span>
+                  <strong class="text">前舱氛围灯 / CH-A</strong>
+                </div>
+                <div class="status-cell">
+                  <span>DLL 配置</span>
+                  <strong class="text">使用默认 zlgcan.dll</strong>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <span class="head-mark"></span>
+              <h2>CAN 发送调试</h2>
+            </div>
+            <div class="panel-body">
+              <div class="send-grid">
+                <div class="field">
+                  <label>CAN ID</label>
+                  <div class="input">0x41</div>
+                </div>
+                <div class="field">
+                  <label>Data hex</label>
+                  <div class="input muted">19 41 03 48 10 0E 01 40</div>
+                </div>
+                <button class="btn"><i data-lucide="send-horizontal"></i>发送</button>
+                <button class="btn secondary">清空</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel monitor-panel">
+            <div class="panel-head">
+              <span class="head-mark"></span>
+              <h2>CAN 监控</h2>
+              <div class="head-tools">
+                <button class="btn secondary"><i data-lucide="download"></i>导出 CSV</button>
+              </div>
+            </div>
+            <div class="panel-body monitor-body">
+              <div class="tabs" id="monitorTabs">
+                <button class="tab active">接收数据 1284</button>
+                <button class="tab">发送数据 37</button>
+                <button class="tab">错误帧 0</button>
+              </div>
+              <div class="filter-row">
+                <div class="input muted">过滤 CAN ID：0x41, 0x7FF</div>
+                <button class="btn">应用</button>
+                <button class="btn secondary">暂停显示</button>
+              </div>
+              <div class="can-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width: 64px;">方向</th>
+                      <th style="width: 118px;">时间</th>
+                      <th style="width: 76px;">CANID</th>
+                      <th style="width: 50px;">Len</th>
+                      <th>Data</th>
+                      <th style="width: 130px;">解析</th>
+                    </tr>
+                  </thead>
+                  <tbody id="canRows">
+                    <tr><td><span class="dir tx">TX</span></td><td>15:18:05.447</td><td>0x41</td><td>8</td><td>19 41 03 48 10 0E 01 40</td><td>亮度 72%</td></tr>
+                    <tr><td><span class="dir rx">RX</span></td><td>15:18:05.489</td><td>0x41</td><td>4</td><td>59 41 00 2A</td><td>ACK 42ms</td></tr>
+                    <tr><td><span class="dir tx">TX</span></td><td>15:18:04.904</td><td>0x41</td><td>8</td><td>19 41 04 10 CC 00 01 01</td><td>场景 常亮</td></tr>
+                    <tr><td><span class="dir rx">RX</span></td><td>15:18:04.946</td><td>0x41</td><td>4</td><td>59 41 00 29</td><td>ACK 41ms</td></tr>
+                    <tr><td><span class="dir rx">RX</span></td><td>15:18:03.018</td><td>0x41</td><td>8</td><td>62 41 01 48 10 0E 01 40</td><td>状态回读</td></tr>
+                    <tr><td><span class="dir tx">TX</span></td><td>15:18:02.976</td><td>0x41</td><td>3</td><td>22 41 01</td><td>读取状态</td></tr>
+                    <tr><td><span class="dir rx">RX</span></td><td>15:18:02.231</td><td>0x19</td><td>5</td><td>70 19 41 01 00</td><td>模块在线</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const root = document.documentElement;
+    const brightnessRange = $("#brightnessRange");
+    const brightnessValue = $("#brightnessValue");
+    const tempRange = $("#tempRange");
+    const tempValue = $("#tempValue");
+    const masterSwitch = $("#masterSwitch");
+    const masterState = $("#masterState");
+    const modeGroup = $("#modeGroup");
+    const systemLog = $("#systemLog");
+    const canRows = $("#canRows");
+    const ackValue = $("#ackValue");
+    const lastCommand = $("#lastCommand");
+    const rxCount = $("#rxCount");
+    let fadeMs = 320;
+    let rxFrames = 1284;
+
+    function now() {
+      return new Date().toLocaleTimeString("zh-CN", {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      }) + "." + String(new Date().getMilliseconds()).padStart(3, "0");
+    }
+
+    function appendLog(text, tone = "") {
+      const line = document.createElement("div");
+      line.innerHTML = `<span class="time">${now()}</span> <span class="${tone}">${text}</span>`;
+      systemLog.appendChild(line);
+      systemLog.scrollTop = systemLog.scrollHeight;
+    }
+
+    function appendCan(direction, data, parse) {
+      const row = document.createElement("tr");
+      const type = direction === "TX" ? "tx" : "rx";
+      row.innerHTML = `<td><span class="dir ${type}">${direction}</span></td><td>${now()}</td><td>0x41</td><td>8</td><td>${data}</td><td>${parse}</td>`;
+      canRows.prepend(row);
+      while (canRows.children.length > 12) {
+        canRows.removeChild(canRows.lastElementChild);
+      }
+    }
+
+    function applyLampVisual() {
+      const brightness = Number(brightnessRange.value);
+      const alpha = masterSwitch.checked ? Math.max(.08, brightness / 100) : .04;
+      root.style.setProperty("--light-alpha", alpha.toFixed(2));
+      brightnessValue.textContent = `${brightness}%`;
+      tempValue.textContent = `${tempRange.value}K`;
+      masterState.textContent = masterSwitch.checked ? "当前输出开启，支持实时调光" : "当前输出关闭，保留参数不下发";
+    }
+
+    brightnessRange.addEventListener("input", applyLampVisual);
+    tempRange.addEventListener("input", applyLampVisual);
+    masterSwitch.addEventListener("change", () => {
+      applyLampVisual();
+      appendLog(masterSwitch.checked ? "主开关已开启，等待下发灯控参数" : "主开关已关闭，预览进入熄灭状态", masterSwitch.checked ? "info" : "warn");
+    });
+
+    modeGroup.addEventListener("click", (event) => {
+      if (event.target.tagName !== "BUTTON") return;
+      modeGroup.querySelectorAll("button").forEach((button) => button.classList.remove("active"));
+      event.target.classList.add("active");
+      lastCommand.textContent = `MODE_${event.target.textContent}`;
+      appendLog(`场景模式切换为：${event.target.textContent}`, "info");
+    });
+
+    $("#fadeMinus").addEventListener("click", () => {
+      fadeMs = Math.max(0, fadeMs - 40);
+      $("#fadeValue").textContent = `${fadeMs}ms`;
+    });
+
+    $("#fadePlus").addEventListener("click", () => {
+      fadeMs = Math.min(1200, fadeMs + 40);
+      $("#fadeValue").textContent = `${fadeMs}ms`;
+    });
+
+    $("#sendLight").addEventListener("click", () => {
+      const brightness = Number(brightnessRange.value);
+      const temp = Number(tempRange.value);
+      const mode = modeGroup.querySelector(".active").textContent;
+      const ack = 36 + Math.floor(Math.random() * 18);
+      ackValue.textContent = `${ack} ms`;
+      lastCommand.textContent = "SET_LIGHT";
+      rxFrames += 2;
+      rxCount.textContent = `${rxFrames.toLocaleString("zh-CN")} 帧`;
+      appendCan("TX", `19 41 03 ${brightness.toString(16).padStart(2, "0").toUpperCase()} ${Math.round(temp / 100).toString(16).padStart(2, "0").toUpperCase()} 0E 01 40`, `${mode} ${brightness}%`);
+      appendCan("RX", `59 41 00 ${ack.toString(16).padStart(2, "0").toUpperCase()}`, `ACK ${ack}ms`);
+      appendLog(`下发灯控：${mode}，亮度 ${brightness}%，色温 ${temp}K，渐变 ${fadeMs}ms`, "info");
+      appendLog(`ACK OK，延迟 ${ack} ms`, "ok");
+    });
+
+    $("#allOff").addEventListener("click", () => {
+      masterSwitch.checked = false;
+      brightnessRange.value = 0;
+      applyLampVisual();
+      lastCommand.textContent = "ALL_OFF";
+      appendCan("TX", "19 41 00 00 00 00 00 00", "全部熄灭");
+      appendLog("已生成全部熄灭命令，可继续观察 CAN 回执", "warn");
+    });
+
+    $("#clearLog").addEventListener("click", () => {
+      systemLog.innerHTML = "";
+      appendLog("系统日志已清空", "info");
+    });
+
+    $("#monitorTabs").addEventListener("click", (event) => {
+      if (event.target.tagName !== "BUTTON") return;
+      $("#monitorTabs").querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
+      event.target.classList.add("active");
+    });
+
+    applyLampVisual();
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
+  </script>
+</body>
+</html>

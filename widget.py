@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
@@ -43,6 +44,7 @@ from d7_pmu_iap_tool.iap.iap_upgrade_controller import (
     UpgradeOptions,
     build_upgrade_preview_frames,
 )
+from d7_pmu_iap_tool.motor_test_page import MotorCanFdConfig, MotorTestPage
 
 # ZLG's 32-bit zlgcan.dll (loaded by the 32-bit broker subprocess). It pulls
 # device backends from the sibling kerneldlls\ folder.
@@ -121,6 +123,7 @@ class Widget(QWidget):
         self.upgrade_thread: QThread | None = None
         self.upgrade_worker: UpgradeWorker | None = None
         self._can_connected = False
+        self._connection_mode = "classic"
         self.known_can_ids: set[int] = set()
         self.filter_can_ids: set[int] = set()
         self.can_filter_buttons: dict[int, QPushButton] = {}
@@ -133,7 +136,7 @@ class Widget(QWidget):
         self._monotonic = time.monotonic
 
         self.can_poll_timer = QTimer(self)
-        self.can_poll_timer.setInterval(80)
+        self.can_poll_timer.setInterval(10)
         self.can_poll_timer.timeout.connect(self._poll_can_frames)
 
         self._build_ui()
@@ -178,12 +181,22 @@ class Widget(QWidget):
         status_layout.addWidget(self.can_status_label)
         self.status_pill.setLayout(status_layout)
 
+        self.iap_nav_button = QPushButton("IAP 升级")
+        self.iap_nav_button.setObjectName("HeaderNavButton")
+        self.iap_nav_button.setCheckable(True)
+        self.iap_nav_button.setChecked(True)
+        self.motor_nav_button = QPushButton("电机测试")
+        self.motor_nav_button.setObjectName("HeaderNavButton")
+        self.motor_nav_button.setCheckable(True)
+
         title_layout = QHBoxLayout()
         title_layout.setContentsMargins(24, 14, 24, 14)
         title_layout.setSpacing(14)
         title_layout.addWidget(self.app_icon_label)
         title_layout.addLayout(title_text_layout)
         title_layout.addStretch(1)
+        title_layout.addWidget(self.iap_nav_button)
+        title_layout.addWidget(self.motor_nav_button)
         title_layout.addWidget(self.status_pill)
         self.header_bar = QWidget()
         self.header_bar.setObjectName("HeaderBar")
@@ -525,11 +538,26 @@ class Widget(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setWidget(content)
 
+        self.motor_page = MotorTestPage(
+            send_frame=self._send_motor_frame,
+            open_can_fd=self.open_motor_device,
+            close_can=self.close_device,
+        )
+        self.motor_page.setMinimumSize(1050, 900)
+        self.motor_scroll_area = QScrollArea()
+        self.motor_scroll_area.setObjectName("MainScrollArea")
+        self.motor_scroll_area.setWidgetResizable(True)
+        self.motor_scroll_area.setWidget(self.motor_page)
+        self.page_stack = QStackedWidget()
+        self.page_stack.setObjectName("PageStack")
+        self.page_stack.addWidget(self.scroll_area)
+        self.page_stack.addWidget(self.motor_scroll_area)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.header_bar)
-        layout.addWidget(self.scroll_area, 1)
+        layout.addWidget(self.page_stack, 1)
 
     def _connect_signals(self) -> None:
         self.device_profile_input.currentIndexChanged.connect(self._handle_device_profile_changed)
@@ -547,6 +575,8 @@ class Widget(QWidget):
         self.pause_can_display_button.clicked.connect(self.toggle_can_display_pause)
         self.save_rx_button.clicked.connect(self.save_can_records)
         self.save_log_button.clicked.connect(self.save_system_log)
+        self.iap_nav_button.clicked.connect(lambda: self._switch_page(0))
+        self.motor_nav_button.clicked.connect(lambda: self._switch_page(1))
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -676,7 +706,7 @@ class Widget(QWidget):
                 font-size: 16px;
                 font-weight: 900;
             }
-            QLineEdit, QComboBox {
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
                 min-height: 32px;
                 border: 1px solid #d1d5db;
                 border-radius: 9px;
@@ -686,7 +716,7 @@ class Widget(QWidget):
                 font-weight: 600;
                 selection-background-color: #2563eb;
             }
-            QLineEdit:focus, QComboBox:focus {
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
                 border-color: #2563eb;
             }
             QComboBox {
@@ -750,6 +780,25 @@ class Widget(QWidget):
                 background: #ffffff;
                 color: #dc2626;
                 border-color: #fecaca;
+            }
+            QPushButton#EmergencyButton {
+                background: #b91c1c;
+                color: #ffffff;
+                border-color: #991b1b;
+                font-weight: 900;
+            }
+            QPushButton#HeaderNavButton {
+                min-height: 30px;
+                border-radius: 16px;
+                border: 1px solid rgba(255, 255, 255, 48);
+                background: rgba(255, 255, 255, 18);
+                color: #cbd5e1;
+                padding: 2px 14px;
+            }
+            QPushButton#HeaderNavButton:checked {
+                background: #ffffff;
+                border-color: #ffffff;
+                color: #0f3b4a;
             }
             QPushButton#FilterChip {
                 min-height: 25px;
@@ -879,6 +928,77 @@ class Widget(QWidget):
                 border: 0;
                 border-radius: 10px;
                 font-family: "Cascadia Mono", Consolas;
+            }
+            QWidget#MotorHero {
+                border: 1px solid #bae6fd;
+                border-radius: 14px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ecfeff, stop:1 #eff6ff);
+            }
+            QLabel#MotorHeroTitle {
+                color: #0f172a;
+                background: transparent;
+                font-size: 22px;
+                font-weight: 900;
+            }
+            QLabel#MotorHeroText {
+                color: #527083;
+                background: transparent;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QLabel#MotorConnectionBadge {
+                min-height: 30px;
+                border-radius: 15px;
+                border: 1px solid #cbd5e1;
+                background: #f8fafc;
+                color: #64748b;
+                padding: 0 13px;
+                font-weight: 900;
+            }
+            QLabel#MotorConnectionBadge[connected="true"] {
+                border-color: #86efac;
+                background: #f0fdf4;
+                color: #15803d;
+            }
+            QWidget#PositionPanel {
+                border-radius: 13px;
+                border: 1px solid #bfdbfe;
+                background: #eff6ff;
+            }
+            QLabel#MotorPositionValue {
+                color: #0f3b70;
+                background: transparent;
+                font-family: "Cascadia Mono", Consolas;
+                font-size: 30px;
+                font-weight: 900;
+            }
+            QLabel#MotorSecondaryValue {
+                color: #47708c;
+                background: transparent;
+                font-family: "Cascadia Mono", Consolas;
+                font-size: 15px;
+                font-weight: 800;
+            }
+            QLabel#MotorMonoValue, QLabel#MotorStatusValue {
+                color: #0f172a;
+                background: transparent;
+                font-family: "Cascadia Mono", Consolas;
+                font-weight: 800;
+            }
+            QWidget#MotorMetric {
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+                background: #f8fafc;
+            }
+            QPlainTextEdit#MotorEventLog {
+                background: #0b1f2a;
+                color: #bae6fd;
+                border: 0;
+                border-radius: 9px;
+                font-family: "Cascadia Mono", Consolas;
+            }
+            QStackedWidget#PageStack {
+                background: #f4f7fb;
             }
             QScrollArea#MainScrollArea {
                 border: 0;
@@ -1073,6 +1193,14 @@ class Widget(QWidget):
         self.dll_path_label.setText(str(self.selected_dll_path))
         self.dll_config_value.setText("使用默认 zlgcan.dll" if self.selected_dll_path == DEFAULT_DLL_PATH else "已选择本地 DLL")
 
+    @Slot(int)
+    def _switch_page(self, index: int) -> None:
+        self.page_stack.setCurrentIndex(index)
+        self.iap_nav_button.setChecked(index == 0)
+        self.motor_nav_button.setChecked(index == 1)
+        self.device_profile_input.setVisible(index == 0)
+        self.app_icon_label.setText("IAP" if index == 0 else "M")
+
     @Slot()
     def open_device(self) -> None:
         try:
@@ -1083,6 +1211,7 @@ class Widget(QWidget):
             if not driver.open(options.device_type, options.device_index, options.channel, options.baudrate):
                 raise RuntimeError(driver.last_error)
             self.driver = driver
+            self._connection_mode = "classic"
             message = f"已打开：通道 {driver.channel}，{options.baudrate} bps"
             self._set_connection_status(True, message)
             self._log(f"CAN 设备{message}")
@@ -1090,9 +1219,43 @@ class Widget(QWidget):
             self._set_connection_status(False, f"打开失败：{exc}", failed=True)
             self._show_error(str(exc))
 
+    def open_motor_device(self, config: MotorCanFdConfig) -> None:
+        if _is_zcanpro_running():
+            raise RuntimeError("ZCanPro 正在运行，请先关闭 ZCanPro 后再打开设备")
+        if self.driver:
+            self.close_device()
+        driver = self._make_driver()
+        if not driver.open(
+            config.device_type,
+            config.device_index,
+            config.channel,
+            config.arbitration_baudrate,
+            can_fd=True,
+            data_baudrate=config.data_baudrate,
+        ):
+            raise RuntimeError(driver.last_error)
+        self.driver = driver
+        self._connection_mode = "canfd"
+        message = (
+            f"CAN FD 已打开：CH{driver.channel}，"
+            f"{config.arbitration_baudrate / 1_000_000:g}/{config.data_baudrate / 1_000_000:g} Mbps"
+        )
+        self._set_connection_status(True, message)
+        self._log(message)
+
+    def _send_motor_frame(self, frame: CanFrame) -> None:
+        if not self._can_connected or self._connection_mode != "canfd":
+            raise RuntimeError("当前不是 CAN FD 连接，请在电机测试页打开 CAN FD")
+        driver = self._ensure_driver_open()
+        if not driver.send(frame):
+            raise RuntimeError(driver.last_error)
+        self._append_can_frame("TX", frame)
+
     @Slot()
     def close_device(self) -> None:
         self.can_poll_timer.stop()
+        if hasattr(self, "motor_page"):
+            self.motor_page.emergency_stop(silent=True)
         if self.driver:
             self.driver.close()
             self.driver.shutdown()
@@ -1102,6 +1265,8 @@ class Widget(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self.can_poll_timer.stop()
+        if hasattr(self, "motor_page"):
+            self.motor_page.shutdown()
         if self.driver:
             self.driver.shutdown()
             self.driver = None
@@ -1230,7 +1395,7 @@ class Widget(QWidget):
         if self.upgrade_thread and self.upgrade_thread.isRunning():
             return
 
-        for _ in range(20):
+        for _ in range(100):
             frame = self.driver.receive(0)
             if frame is None:
                 return
@@ -1328,11 +1493,12 @@ class Widget(QWidget):
         elif self._can_connected:
             self.can_poll_timer.start()
 
-        self.start_upgrade_button.setEnabled(not busy and self._can_connected)
+        classic_connected = self._can_connected and self._connection_mode == "classic"
+        self.start_upgrade_button.setEnabled(not busy and classic_connected)
         self.simulate_battery_button.setEnabled(not busy)
         self.open_button.setEnabled(not busy and not self._can_connected)
         self.close_button.setEnabled(not busy and self._can_connected)
-        self.query_role_button.setEnabled(not busy and self._can_connected)
+        self.query_role_button.setEnabled(not busy and classic_connected)
         self.send_button.setEnabled(not busy and self._can_connected)
         self.stop_button.setEnabled(busy)
         for config_widget in (
@@ -1349,6 +1515,10 @@ class Widget(QWidget):
         self.can_status_label.setText(message)
         color = "#22c55e" if connected else "#dc2626" if failed else "#94a3b8"
         self.can_status_dot.setStyleSheet(f"border-radius: 5px; background: {color};")
+        if hasattr(self, "motor_page"):
+            motor_connected = connected and self._connection_mode == "canfd"
+            motor_message = message if motor_connected else "CAN FD 未连接"
+            self.motor_page.set_connected(motor_connected, motor_message)
         if connected:
             self._set_step_state(0, "StepDone", "USBCAN-I 已打开")
         elif failed:
@@ -1363,6 +1533,8 @@ class Widget(QWidget):
 
     def _append_can_frame(self, direction: str, frame: CanFrame) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        if hasattr(self, "motor_page"):
+            self.motor_page.handle_frame(direction, frame)
         if direction == "TX":
             self._log(
                 f"[{timestamp}] {direction} ID=0x{frame.id:X}, "

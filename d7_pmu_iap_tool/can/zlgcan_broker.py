@@ -43,6 +43,9 @@ def _frame_to_json(frame: CanFrame) -> dict:
         "data": bytes(frame.data[: frame.dlc]).hex(),
         "extended": frame.extended,
         "remote": frame.remote,
+        "fd": frame.fd,
+        "brs": frame.brs,
+        "esi": frame.esi,
     }
 
 
@@ -52,6 +55,9 @@ def _frame_from_json(payload: dict) -> CanFrame:
         data=bytes.fromhex(payload.get("data", "")),
         extended=bool(payload.get("extended", False)),
         remote=bool(payload.get("remote", False)),
+        fd=bool(payload.get("fd", False)),
+        brs=bool(payload.get("brs", False)),
+        esi=bool(payload.get("esi", False)),
     )
 
 
@@ -61,12 +67,20 @@ def _handle(driver: ZlgVciCanDriver, request: dict) -> dict:
         return {"ok": True}
     if cmd == "open":
         driver.set_dll_path(request["dll"])
-        ok = driver.open(
+        open_args = (
             int(request["device_type"]),
             int(request["device_index"]),
             int(request["channel"]),
             int(request["baudrate"]),
         )
+        if request.get("can_fd"):
+            ok = driver.open(
+                *open_args,
+                can_fd=True,
+                data_baudrate=int(request.get("data_baudrate", request["baudrate"])),
+            )
+        else:
+            ok = driver.open(*open_args)
         if not ok:
             return {"ok": False, "error": driver.last_error}
         return {
@@ -74,6 +88,8 @@ def _handle(driver: ZlgVciCanDriver, request: dict) -> dict:
             "device_type": driver.device_type,
             "device_index": driver.device_index,
             "channel": driver.channel,
+            "can_fd": bool(getattr(driver, "can_fd", False)),
+            "data_baudrate": getattr(driver, "data_baudrate", None),
         }
     if cmd == "close":
         driver.close()

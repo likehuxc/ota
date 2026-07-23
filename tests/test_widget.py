@@ -153,6 +153,21 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(widget.system_log_group.title(), "系统日志")
         self.assertEqual(widget.role_value_label.text(), "APP")
 
+    def test_motor_test_is_a_separate_page(self):
+        widget = Widget()
+
+        self.assertEqual(widget.page_stack.count(), 2)
+        self.assertEqual(widget.page_stack.currentIndex(), 0)
+        self.assertEqual(widget.motor_nav_button.text(), "电机测试")
+
+        widget._switch_page(1)
+
+        self.assertEqual(widget.page_stack.currentIndex(), 1)
+        self.assertTrue(widget.motor_nav_button.isChecked())
+        self.assertFalse(widget.device_profile_input.isVisible())
+        self.assertEqual(widget.motor_page.device_id_input.text(), "0x01")
+        self.assertIn("4,320,000", widget.motor_page.plan_label.text())
+
     def test_firmware_card_only_shows_size_metric(self):
         widget = Widget()
 

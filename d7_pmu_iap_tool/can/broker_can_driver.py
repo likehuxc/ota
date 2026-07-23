@@ -59,6 +59,8 @@ class ZlgCanBrokerDriver(CanDriver):
         self._device_type = 0
         self._device_index = 0
         self._channel = 0
+        self._can_fd = False
+        self._data_baudrate: int | None = None
 
     # -- process lifecycle -------------------------------------------------
     def _ensure_broker(self) -> bool:
@@ -124,16 +126,29 @@ class ZlgCanBrokerDriver(CanDriver):
             pass
 
     # -- CanDriver interface ----------------------------------------------
-    def open(self, device_type: int, device_index: int, channel: int, baudrate: int) -> bool:
+    def open(
+        self,
+        device_type: int,
+        device_index: int,
+        channel: int,
+        baudrate: int,
+        *,
+        can_fd: bool = False,
+        data_baudrate: int | None = None,
+    ) -> bool:
         self._last_error = ""
-        response = self._request({
+        request = {
             "cmd": "open",
             "dll": self.dll_path,
             "device_type": device_type,
             "device_index": device_index,
             "channel": channel,
             "baudrate": baudrate,
-        })
+        }
+        if can_fd:
+            request["can_fd"] = True
+            request["data_baudrate"] = int(data_baudrate or baudrate)
+        response = self._request(request)
         if response is None:
             return False
         if response.get("ok"):
@@ -141,6 +156,8 @@ class ZlgCanBrokerDriver(CanDriver):
             self._device_type = response.get("device_type", device_type)
             self._device_index = response.get("device_index", device_index)
             self._channel = response.get("channel", channel)
+            self._can_fd = bool(response.get("can_fd", can_fd))
+            self._data_baudrate = response.get("data_baudrate", data_baudrate)
             return True
         self._last_error = response.get("error", "open failed")
         return False
@@ -156,6 +173,14 @@ class ZlgCanBrokerDriver(CanDriver):
     @property
     def channel(self) -> int:
         return self._channel
+
+    @property
+    def can_fd(self) -> bool:
+        return self._can_fd
+
+    @property
+    def data_baudrate(self) -> int | None:
+        return self._data_baudrate
 
     def close(self) -> None:
         if self._proc and self._proc.poll() is None:
@@ -173,6 +198,9 @@ class ZlgCanBrokerDriver(CanDriver):
                 "data": bytes(frame.data[: frame.dlc]).hex(),
                 "extended": frame.extended,
                 "remote": frame.remote,
+                "fd": frame.fd,
+                "brs": frame.brs,
+                "esi": frame.esi,
             },
         })
         if response is None:
@@ -196,6 +224,9 @@ class ZlgCanBrokerDriver(CanDriver):
             data=bytes.fromhex(payload.get("data", "")),
             extended=bool(payload.get("extended", False)),
             remote=bool(payload.get("remote", False)),
+            fd=bool(payload.get("fd", False)),
+            brs=bool(payload.get("brs", False)),
+            esi=bool(payload.get("esi", False)),
         )
 
     @property
