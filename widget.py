@@ -36,7 +36,8 @@ from PySide6.QtWidgets import (
 )
 
 from d7_pmu_iap_tool.can.broker_can_driver import ZlgCanBrokerDriver
-from d7_pmu_iap_tool.can.can_frame import CanFrame
+from d7_pmu_iap_tool.can.can_frame import CanDriver, CanFrame
+from d7_pmu_iap_tool.can.zlg_vci_can_driver import ZlgVciCanDriver
 from d7_pmu_iap_tool.iap.firmware_image import FirmwareImage
 from d7_pmu_iap_tool.iap.iap_protocol import CMD_FILL_SEGMENT_DATA, IapProtocol
 from d7_pmu_iap_tool.iap.iap_upgrade_controller import (
@@ -49,6 +50,22 @@ from d7_pmu_iap_tool.motor_test_page import MotorCanFdConfig, MotorTestPage
 # ZLG's 32-bit zlgcan.dll (loaded by the 32-bit broker subprocess). It pulls
 # device backends from the sibling kerneldlls\ folder.
 DEFAULT_DLL_PATH = Path(r"C:\Program Files (x86)\ZCANPRO\zlgcan.dll")
+
+
+def _find_default_canfd_dll() -> Path:
+    software_root = Path.home() / "Desktop" / "绿色软件"
+    patterns = (
+        "CANFD分析仪资料*/二次开发库*/x64/ControlCANFD.dll",
+        "CANFD分析仪资料*/调试工具/*/bin/x64/ControlCANFD.dll",
+    )
+    for pattern in patterns:
+        matches = sorted(software_root.glob(pattern))
+        if matches:
+            return matches[0]
+    return Path("ControlCANFD.dll")
+
+
+DEFAULT_CANFD_DLL_PATH = _find_default_canfd_dll()
 DEFAULT_DEVICE_TYPE = 3  # ZCAN_USBCAN1 (USBCAN-I)
 DEFAULT_DEVICE_INDEX = 0
 MAX_CAN_ROWS = 500
@@ -119,7 +136,7 @@ class Widget(QWidget):
         self.setWindowTitle("D7 CAN IAP")
         self.resize(1120, 720)
 
-        self.driver: ZlgCanBrokerDriver | None = None
+        self.driver: CanDriver | None = None
         self.upgrade_thread: QThread | None = None
         self.upgrade_worker: UpgradeWorker | None = None
         self._can_connected = False
@@ -540,8 +557,10 @@ class Widget(QWidget):
 
         self.motor_page = MotorTestPage(
             send_frame=self._send_motor_frame,
+            send_periodic_frame=self._send_motor_periodic_frame,
             open_can_fd=self.open_motor_device,
             close_can=self.close_device,
+            default_canfd_dll=str(DEFAULT_CANFD_DLL_PATH),
         )
         self.motor_page.setMinimumSize(1050, 900)
         self.motor_scroll_area = QScrollArea()
@@ -1224,7 +1243,7 @@ class Widget(QWidget):
             raise RuntimeError("ZCanPro 正在运行，请先关闭 ZCanPro 后再打开设备")
         if self.driver:
             self.close_device()
-        driver = self._make_driver()
+        driver = ZlgVciCanDriver(config.dll_path, change_working_directory=False)
         if not driver.open(
             config.device_type,
             config.device_index,
@@ -1251,6 +1270,13 @@ class Widget(QWidget):
             raise RuntimeError(driver.last_error)
         self._append_can_frame("TX", frame)
 
+    def _send_motor_periodic_frame(self, frame: CanFrame) -> None:
+        if not self._can_connected or self._connection_mode != "canfd" or not self.driver:
+            raise RuntimeError("CAN FD 连接已断开")
+        if not self.driver.send(frame):
+            raise RuntimeError(self.driver.last_error)
+        self.motor_page.record_periodic_tx(frame)
+
     @Slot()
     def close_device(self) -> None:
         self.can_poll_timer.stop()
@@ -1258,7 +1284,8 @@ class Widget(QWidget):
             self.motor_page.emergency_stop(silent=True)
         if self.driver:
             self.driver.close()
-            self.driver.shutdown()
+            if hasattr(self.driver, "shutdown"):
+                self.driver.shutdown()
             self.driver = None
         self._set_connection_status(False, "未连接")
         self._log("CAN 设备已关闭")
@@ -1268,7 +1295,10 @@ class Widget(QWidget):
         if hasattr(self, "motor_page"):
             self.motor_page.shutdown()
         if self.driver:
-            self.driver.shutdown()
+            if hasattr(self.driver, "shutdown"):
+                self.driver.shutdown()
+            else:
+                self.driver.close()
             self.driver = None
         super().closeEvent(event)
 
@@ -1428,7 +1458,7 @@ class Widget(QWidget):
     def _format_can_id(value: int) -> str:
         return f"0x{value:x}"
 
-    def _ensure_driver_open(self) -> ZlgCanBrokerDriver:
+    def _ensure_driver_open(self) -> CanDriver:
         if self.driver and self.driver.is_open():
             return self.driver
         if _is_zcanpro_running():

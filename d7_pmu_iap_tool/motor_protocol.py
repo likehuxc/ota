@@ -35,14 +35,16 @@ def position_rad_to_raw(position_rad: float) -> int:
     return max(0, min(POSITION_RAW_MAX, round(scaled)))
 
 
-def _device_frame(device_id: int, data: bytes) -> CanFrame:
+def _device_frame(device_id: int, data: bytes, command_id: int | None = None) -> CanFrame:
     validate_device_id(device_id)
+    if command_id is not None:
+        validate_device_id(command_id)
     payload = bytearray(data)
     # The standalone frames captured for ID 1 carry the logical device ID in byte 5.
     # For other IDs the request CAN ID is authoritative; byte 5 follows the same rule.
     if len(payload) > 5 and len(payload) != len(READ_MOTOR_STATE_DATA):
         payload[5] = device_id
-    return CanFrame(id=device_id, data=payload, fd=True, brs=True)
+    return CanFrame(id=device_id if command_id is None else command_id, data=payload, fd=True, brs=True)
 
 
 def validate_device_id(device_id: int) -> None:
@@ -50,29 +52,36 @@ def validate_device_id(device_id: int) -> None:
         raise ValueError("device ID must be a standard CAN ID (0x000..0x7FF)")
 
 
-def read_motor_state_frame(device_id: int) -> CanFrame:
+def read_motor_state_frame(device_id: int, command_id: int | None = None) -> CanFrame:
     validate_device_id(device_id)
-    return CanFrame(id=device_id, data=READ_MOTOR_STATE_DATA, fd=True, brs=True)
+    if command_id is not None:
+        validate_device_id(command_id)
+    return CanFrame(
+        id=device_id if command_id is None else command_id,
+        data=READ_MOTOR_STATE_DATA,
+        fd=True,
+        brs=True,
+    )
 
 
-def read_human_state_frame(device_id: int) -> CanFrame:
-    return _device_frame(device_id, READ_HUMAN_STATE_DATA)
+def read_human_state_frame(device_id: int, command_id: int | None = None) -> CanFrame:
+    return _device_frame(device_id, READ_HUMAN_STATE_DATA, command_id)
 
 
-def set_control_source_frame(device_id: int) -> CanFrame:
-    return _device_frame(device_id, SET_CONTROL_SOURCE_DATA)
+def set_control_source_frame(device_id: int, command_id: int | None = None) -> CanFrame:
+    return _device_frame(device_id, SET_CONTROL_SOURCE_DATA, command_id)
 
 
-def enable_frame(device_id: int) -> CanFrame:
-    return _device_frame(device_id, ENABLE_DATA)
+def enable_frame(device_id: int, command_id: int | None = None) -> CanFrame:
+    return _device_frame(device_id, ENABLE_DATA, command_id)
 
 
-def disable_frame(device_id: int) -> CanFrame:
-    return _device_frame(device_id, DISABLE_DATA)
+def disable_frame(device_id: int, command_id: int | None = None) -> CanFrame:
+    return _device_frame(device_id, DISABLE_DATA, command_id)
 
 
-def fault_reset_frame(device_id: int) -> CanFrame:
-    return _device_frame(device_id, FAULT_RESET_DATA)
+def fault_reset_frame(device_id: int, command_id: int | None = None) -> CanFrame:
+    return _device_frame(device_id, FAULT_RESET_DATA, command_id)
 
 
 def position_command_frame(device_id: int, position_rad: float, broadcast_id: int = 0x300) -> CanFrame:
@@ -139,4 +148,3 @@ def decode_human_state(frame: CanFrame, device_id: int) -> int | None:
     if data[7] != (device_id & 0xFF) or data[9:12] != bytes.fromhex("42 10 20"):
         return None
     return int.from_bytes(data[12:14], "little")
-

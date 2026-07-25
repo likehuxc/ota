@@ -1,6 +1,7 @@
 import os
 import struct
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QScrollArea
 
 from d7_pmu_iap_tool.can.can_frame import CanFrame
-from widget import DEFAULT_DLL_PATH, MAX_CAN_ROWS, Widget
+from widget import DEFAULT_CANFD_DLL_PATH, DEFAULT_DLL_PATH, MAX_CAN_ROWS, Widget
 
 
 class FakeDriver:
@@ -166,7 +167,121 @@ class WidgetTests(unittest.TestCase):
         self.assertTrue(widget.motor_nav_button.isChecked())
         self.assertFalse(widget.device_profile_input.isVisible())
         self.assertEqual(widget.motor_page.device_id_input.text(), "0x01")
+        self.assertEqual(widget.motor_page.channel_input.currentData(), 1)
+        self.assertEqual(widget.motor_page.broadcast_id_input.text(), "0x300")
         self.assertIn("4,320,000", widget.motor_page.plan_label.text())
+        self.assertEqual(widget.motor_page.canfd_dll_input.text(), str(DEFAULT_CANFD_DLL_PATH))
+        self.assertEqual(Path(widget.motor_page.canfd_dll_input.text()).name, "ControlCANFD.dll")
+
+    def test_motor_fault_state_immediately_stops_and_double_disables(self):
+        widget = Widget()
+        driver = FakeDriver()
+        widget.driver = driver
+        widget._connection_mode = "canfd"
+        widget._set_connection_status(True, "CAN FD 已打开")
+        page = widget.motor_page
+        page._holding = True
+        page._fault_latched = False
+        fault_reply = CanFrame(
+            id=0x101,
+            data=bytes.fromhex("26 4D 00 39 24 01 00 01 10 42 10 20 03 00 01 20"),
+            fd=True,
+        )
+
+        with patch("d7_pmu_iap_tool.motor_test_page.QMessageBox.critical"):
+            widget._append_can_frame("RX", fault_reply)
+
+        self.assertFalse(page._holding)
+        self.assertTrue(page._fault_latched)
+        self.assertEqual(len(driver.sent), 2)
+        self.assertEqual([frame.id for frame in driver.sent], [0x300, 0x300])
+        self.assertTrue(all(bytes(frame.data[: frame.dlc])[12] == 0 for frame in driver.sent))
+        self.assertIn("安全保护触发", page.event_log.toPlainText())
+
+    def test_motor_reproduction_mode_records_fault_but_keeps_running(self):
+        widget = Widget()
+        driver = FakeDriver()
+        widget.driver = driver
+        widget._connection_mode = "canfd"
+        widget._set_connection_status(True, "CAN FD 已打开")
+        page = widget.motor_page
+        page._holding = True
+        page._fault_latched = False
+        page.reproduction_mode_input.setChecked(True)
+        fault_reply = CanFrame(
+            id=0x101,
+            data=bytes.fromhex("26 4D 00 39 24 01 00 01 10 42 10 20 03 00 01 20"),
+            fd=True,
+        )
+
+        widget._append_can_frame("RX", fault_reply)
+
+        self.assertTrue(page._holding)
+        self.assertEqual(driver.sent, [])
+        self.assertIn("复现模式告警（继续运行）", page.event_log.toPlainText())
+
+    def test_motor_start_refreshes_stale_feedback_and_resumes_automatically(self):
+        widget = Widget()
+        driver = FakeDriver()
+        widget.driver = driver
+        widget._connection_mode = "canfd"
+        widget._set_connection_status(True, "CAN FD 已打开")
+        page = widget.motor_page
+        feedback = CanFrame(
+            id=0x101,
+            data=bytes.fromhex(
+                "43 40 40 38 6C 01 1A 01 00 00 00 00 00 FF 7F 51 78 "
+                "FF 7F 75 55 FF 7F FF 7F 11 08 4C BC F1 40 1A"
+            ),
+            fd=True,
+            brs=True,
+        )
+        widget._append_can_frame("RX", feedback)
+        page._last_feedback_monotonic = time.monotonic() - 5.0
+
+        with (
+            patch.object(page, "_start_hold_after_feedback") as start_after_feedback,
+            patch.object(page, "_show_error") as show_error,
+        ):
+            page.start_hold()
+
+            self.assertEqual(len(driver.sent), 1)
+            self.assertEqual(
+                bytes(driver.sent[0].data[: driver.sent[0].dlc]),
+                bytes.fromhex("40 40 40 08 04 01"),
+            )
+            self.assertFalse(page.start_hold_button.isEnabled())
+            start_after_feedback.assert_not_called()
+
+            widget._append_can_frame("RX", feedback)
+            self.app.processEvents()
+            self.app.processEvents()
+
+            start_after_feedback.assert_called_once_with()
+            show_error.assert_not_called()
+            self.assertAlmostEqual(page.target_position_input.value(), -1.6618, places=4)
+
+    def test_motor_csv_includes_buffered_history_and_future_raw_frames(self):
+        widget = Widget()
+        page = widget.motor_page
+        before = CanFrame(id=0x101, data=bytes(range(12)), fd=True, brs=True)
+        after = CanFrame(id=0x300, data=bytes(range(16)), fd=True, brs=True)
+        page._record_frame("RX", before, show=False)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "motor_raw.csv"
+            with patch(
+                "d7_pmu_iap_tool.motor_test_page.QFileDialog.getSaveFileName",
+                return_value=(str(output_path), "CSV (*.csv)"),
+            ):
+                page.start_csv_recording()
+            page.record_periodic_tx(after)
+            page.stop_csv_recording()
+            content = output_path.read_text(encoding="utf-8-sig")
+
+        self.assertIn("sequence,time,direction,can_id,frame_type,brs,len,data", content)
+        self.assertIn("RX,0x101,CAN FD,1,12", content)
+        self.assertIn("TX,0x300,CAN FD,1,16", content)
 
     def test_firmware_card_only_shows_size_metric(self):
         widget = Widget()

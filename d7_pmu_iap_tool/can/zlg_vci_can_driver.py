@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import threading
 from pathlib import Path
 
 from d7_pmu_iap_tool.can.can_frame import CanDriver, CanFrame
@@ -133,8 +134,10 @@ class ZlgVciCanDriver(CanDriver):
     (see ``zlgcan_broker.py`` / the broker proxy driver).
     """
 
-    def __init__(self, dll_path: str | Path | None = None) -> None:
+    def __init__(self, dll_path: str | Path | None = None, *, change_working_directory: bool = True) -> None:
         self.dll_path = str(dll_path) if dll_path else ""
+        self._change_working_directory = change_working_directory
+        self._dll_directory_handle = None
         self._dll = None
         self._is_open = False
         self._last_error = ""
@@ -143,6 +146,7 @@ class ZlgVciCanDriver(CanDriver):
         self._channel = 0
         self._device_handle = INVALID_DEVICE_HANDLE
         self._channel_handle = INVALID_CHANNEL_HANDLE
+        self._io_lock = threading.RLock()
         self._can_fd = False
         self._data_baudrate: int | None = None
 
@@ -284,71 +288,88 @@ class ZlgVciCanDriver(CanDriver):
         arbitration_baudrate: int,
         data_baudrate: int,
     ) -> bool:
-        if not hasattr(self._dll, "ZCAN_SetValue"):
-            self._last_error = "当前 zlgcan.dll 不支持 ZCAN_SetValue，无法配置 CAN FD 波特率"
-            return False
-        settings = (
-            (f"{channel}/canfd_abit_baud_rate", str(arbitration_baudrate)),
-            (f"{channel}/canfd_dbit_baud_rate", str(data_baudrate)),
-        )
-        for path, value in settings:
-            result = self._dll.ZCAN_SetValue(device_handle, path.encode("ascii"), value.encode("ascii"))
-            if result != STATUS_OK:
-                self._last_error = f"CAN FD 参数设置失败：{path}={value}"
+        if hasattr(self._dll, "ZCAN_SetAbitBaud") and hasattr(self._dll, "ZCAN_SetDbitBaud"):
+            if self._dll.ZCAN_SetAbitBaud(device_handle, channel, arbitration_baudrate) != STATUS_OK:
+                self._last_error = f"CAN FD 仲裁域波特率设置失败：{arbitration_baudrate}"
                 return False
-        return True
+            if self._dll.ZCAN_SetDbitBaud(device_handle, channel, data_baudrate) != STATUS_OK:
+                self._last_error = f"CAN FD 数据域波特率设置失败：{data_baudrate}"
+                return False
+            if hasattr(self._dll, "ZCAN_SetCANFDStandard"):
+                if self._dll.ZCAN_SetCANFDStandard(device_handle, channel, 0) != STATUS_OK:
+                    self._last_error = "CAN FD ISO 模式设置失败"
+                    return False
+            return True
+
+        if hasattr(self._dll, "ZCAN_SetValue"):
+            settings = (
+                (f"{channel}/canfd_abit_baud_rate", str(arbitration_baudrate)),
+                (f"{channel}/canfd_dbit_baud_rate", str(data_baudrate)),
+            )
+            for path, value in settings:
+                result = self._dll.ZCAN_SetValue(device_handle, path.encode("ascii"), value.encode("ascii"))
+                if result != STATUS_OK:
+                    self._last_error = f"CAN FD 参数设置失败：{path}={value}"
+                    return False
+            return True
+
+        self._last_error = "当前 DLL 缺少 CAN FD 波特率配置接口"
+        return False
 
     def close(self) -> None:
-        if self._dll and self._is_open:
-            if self._channel_handle != INVALID_CHANNEL_HANDLE:
-                self._dll.ZCAN_ResetCAN(self._channel_handle)
-            if self._device_handle != INVALID_DEVICE_HANDLE:
-                self._dll.ZCAN_CloseDevice(self._device_handle)
-        self._is_open = False
-        self._channel_handle = INVALID_CHANNEL_HANDLE
-        self._device_handle = INVALID_DEVICE_HANDLE
+        with self._io_lock:
+            if self._dll and self._is_open:
+                if self._channel_handle != INVALID_CHANNEL_HANDLE:
+                    self._dll.ZCAN_ResetCAN(self._channel_handle)
+                if self._device_handle != INVALID_DEVICE_HANDLE:
+                    self._dll.ZCAN_CloseDevice(self._device_handle)
+            self._is_open = False
+            self._channel_handle = INVALID_CHANNEL_HANDLE
+            self._device_handle = INVALID_DEVICE_HANDLE
 
     def is_open(self) -> bool:
         return self._is_open
 
     def send(self, frame: CanFrame) -> bool:
-        if not self._is_open or not self._dll:
-            self._last_error = "CAN device is not open"
-            return False
-        if frame.fd:
-            if not self._can_fd:
-                self._last_error = "CAN FD frame requires a CAN FD channel"
+        with self._io_lock:
+            if not self._is_open or not self._dll:
+                self._last_error = "CAN device is not open"
                 return False
-            data = frame_to_zcan_transmit_fd_data(frame)
-            sent = self._dll.ZCAN_TransmitFD(self._channel_handle, ctypes.byref(data), 1)
-        else:
-            data = frame_to_zcan_transmit_data(frame)
-            sent = self._dll.ZCAN_Transmit(self._channel_handle, ctypes.byref(data), 1)
-        if sent != 1:
-            self._last_error = f"ZCAN_Transmit failed, sent={sent}"
-            return False
-        return True
+            if frame.fd:
+                if not self._can_fd:
+                    self._last_error = "CAN FD frame requires a CAN FD channel"
+                    return False
+                data = frame_to_zcan_transmit_fd_data(frame)
+                sent = self._dll.ZCAN_TransmitFD(self._channel_handle, ctypes.byref(data), 1)
+            else:
+                data = frame_to_zcan_transmit_data(frame)
+                sent = self._dll.ZCAN_Transmit(self._channel_handle, ctypes.byref(data), 1)
+            if sent != 1:
+                self._last_error = f"ZCAN_Transmit failed, sent={sent}"
+                return False
+            return True
 
     def receive(self, timeout_ms: int) -> CanFrame | None:
-        if not self._is_open or not self._dll:
-            self._last_error = "CAN device is not open"
-            return None
-        if self._can_fd:
-            fd_buffer = (ZcanReceiveFdData * 1)()
-            count = self._dll.ZCAN_ReceiveFD(self._channel_handle, ctypes.byref(fd_buffer), 1, timeout_ms)
-            buffer = fd_buffer
-        else:
-            can_buffer = (ZcanReceiveData * 1)()
-            count = self._dll.ZCAN_Receive(self._channel_handle, ctypes.byref(can_buffer), 1, timeout_ms)
-            buffer = can_buffer
-        if count == 0:
-            return None
-        if count == 0xFFFFFFFF:
-            self._last_error = "ZCAN_Receive failed"
-            return None
-        if self._can_fd:
-            return zcan_receive_fd_data_to_frame(buffer[0])
-        return zcan_receive_data_to_frame(buffer[0])
+        with self._io_lock:
+            if not self._is_open or not self._dll:
+                self._last_error = "CAN device is not open"
+                return None
+            if self._can_fd:
+                fd_buffer = (ZcanReceiveFdData * 1)()
+                count = self._dll.ZCAN_ReceiveFD(self._channel_handle, ctypes.byref(fd_buffer), 1, timeout_ms)
+                buffer = fd_buffer
+            else:
+                can_buffer = (ZcanReceiveData * 1)()
+                count = self._dll.ZCAN_Receive(self._channel_handle, ctypes.byref(can_buffer), 1, timeout_ms)
+                buffer = can_buffer
+            if count == 0:
+                return None
+            if count == 0xFFFFFFFF:
+                self._last_error = "ZCAN_Receive failed"
+                return None
+            if self._can_fd:
+                return zcan_receive_fd_data_to_frame(buffer[0])
+            return zcan_receive_data_to_frame(buffer[0])
 
     @property
     def last_error(self) -> str:
@@ -368,9 +389,10 @@ class ZlgVciCanDriver(CanDriver):
         # resolved relative to the process working directory, so cd into it.
         dll_dir = str(path.parent)
         try:
-            os.chdir(dll_dir)
+            if self._change_working_directory:
+                os.chdir(dll_dir)
             if hasattr(os, "add_dll_directory"):
-                os.add_dll_directory(dll_dir)
+                self._dll_directory_handle = os.add_dll_directory(dll_dir)
         except OSError:
             pass
         try:
@@ -392,7 +414,7 @@ class ZlgVciCanDriver(CanDriver):
             "ZCAN_Receive",
         )
         if self._can_fd:
-            required += ("ZCAN_SetValue", "ZCAN_TransmitFD", "ZCAN_ReceiveFD")
+            required += ("ZCAN_TransmitFD", "ZCAN_ReceiveFD")
         missing = [name for name in required if not hasattr(self._dll, name)]
         if missing:
             self._last_error = "DLL 缺少函数：" + ", ".join(missing)
@@ -413,8 +435,18 @@ class ZlgVciCanDriver(CanDriver):
         self._dll.ZCAN_Receive.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_int]
         self._dll.ZCAN_Receive.restype = ctypes.c_uint
         if self._can_fd:
-            self._dll.ZCAN_SetValue.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
-            self._dll.ZCAN_SetValue.restype = ctypes.c_uint
+            if hasattr(self._dll, "ZCAN_SetValue"):
+                self._dll.ZCAN_SetValue.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+                self._dll.ZCAN_SetValue.restype = ctypes.c_uint
+            if hasattr(self._dll, "ZCAN_SetAbitBaud"):
+                self._dll.ZCAN_SetAbitBaud.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
+                self._dll.ZCAN_SetAbitBaud.restype = ctypes.c_uint
+            if hasattr(self._dll, "ZCAN_SetDbitBaud"):
+                self._dll.ZCAN_SetDbitBaud.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
+                self._dll.ZCAN_SetDbitBaud.restype = ctypes.c_uint
+            if hasattr(self._dll, "ZCAN_SetCANFDStandard"):
+                self._dll.ZCAN_SetCANFDStandard.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
+                self._dll.ZCAN_SetCANFDStandard.restype = ctypes.c_uint
             self._dll.ZCAN_TransmitFD.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
             self._dll.ZCAN_TransmitFD.restype = ctypes.c_uint
             self._dll.ZCAN_ReceiveFD.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_int]

@@ -44,6 +44,12 @@ class MotorProtocolTests(unittest.TestCase):
         self.assertEqual(frame.dlc, 16)
         self.assertEqual(bytes(frame.data[:16]), bytes.fromhex("40 40 00 19 24 01 00 01 10 01 10 20 00 00 00 00"))
 
+    def test_service_frame_can_use_bench_broadcast_id(self):
+        frame = disable_frame(0x01, command_id=0x300)
+
+        self.assertEqual(frame.id, 0x300)
+        self.assertEqual(frame.dlc, 16)
+
     def test_decodes_32_byte_feedback(self):
         frame = CanFrame(
             id=0x101,

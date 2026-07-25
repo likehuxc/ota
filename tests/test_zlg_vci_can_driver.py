@@ -79,6 +79,16 @@ class FakeZcanFdDll(FakeZcanDll):
         return 1
 
 
+class FakeVendorCanFdDll(FakeZcanDll):
+    def __init__(self):
+        super().__init__()
+        self.ZCAN_SetAbitBaud = FakeFunction(lambda *_: STATUS_OK)
+        self.ZCAN_SetDbitBaud = FakeFunction(lambda *_: STATUS_OK)
+        self.ZCAN_SetCANFDStandard = FakeFunction(lambda *_: STATUS_OK)
+        self.ZCAN_TransmitFD = FakeFunction(lambda *_: 1)
+        self.ZCAN_ReceiveFD = FakeFunction(lambda *_: 0)
+
+
 class TimingForBaudrateTests(unittest.TestCase):
     def test_known_baud_rates(self):
         self.assertEqual(timing_for_baudrate(1_000_000), (0x00, 0x14))
@@ -247,6 +257,17 @@ class ZlgVciCanDriverTests(unittest.TestCase):
         config = dll.ZCAN_InitCAN.calls[0][2]._obj
         self.assertEqual(config.can_type, 1)
         self.assertTrue(driver.can_fd)
+
+    def test_vendor_controlcanfd_uses_direct_baudrate_functions(self):
+        dll = FakeVendorCanFdDll()
+        driver = ZlgVciCanDriver()
+        driver._dll = dll
+
+        self.assertTrue(driver.open(41, 0, 0, 1_000_000, can_fd=True, data_baudrate=5_000_000))
+
+        self.assertEqual(dll.ZCAN_SetAbitBaud.calls[0][1:], (0, 1_000_000))
+        self.assertEqual(dll.ZCAN_SetDbitBaud.calls[0][1:], (0, 5_000_000))
+        self.assertEqual(dll.ZCAN_SetCANFDStandard.calls[0][1:], (0, 0))
 
     def test_can_fd_send_and_receive_use_fd_api(self):
         dll = FakeZcanFdDll()
