@@ -79,6 +79,11 @@ class FakeZcanFdDll(FakeZcanDll):
         return 1
 
 
+class FakeClassicOnCanFdDll(FakeZcanFdDll):
+    def _receive_fd(self, _channel_handle, _arr_ptr, _length, _wait_time):
+        return 0
+
+
 class FakeVendorCanFdDll(FakeZcanDll):
     def __init__(self):
         super().__init__()
@@ -285,6 +290,20 @@ class ZlgVciCanDriverTests(unittest.TestCase):
         self.assertTrue(received.fd)
         self.assertTrue(received.brs)
         self.assertEqual(received.dlc, 12)
+
+    def test_can_fd_channel_falls_back_to_classic_receive_queue(self):
+        dll = FakeClassicOnCanFdDll()
+        driver = ZlgVciCanDriver()
+        driver._dll = dll
+        driver.open(41, 0, 0, 1_000_000, can_fd=True, data_baudrate=5_000_000)
+
+        frame = driver.receive(10)
+
+        self.assertIsNotNone(frame)
+        self.assertFalse(frame.fd)
+        self.assertEqual(frame.id, 0x7FF)
+        self.assertEqual(dll.ZCAN_ReceiveFD.calls[-1][3], 10)
+        self.assertEqual(dll.ZCAN_Receive.calls[-1][3], 0)
 
     def test_fd_conversion_helpers_preserve_flags_and_payload(self):
         outgoing = CanFrame(id=0x300, data=bytes(range(16)), fd=True, brs=True)

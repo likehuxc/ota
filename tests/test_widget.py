@@ -157,13 +157,13 @@ class WidgetTests(unittest.TestCase):
     def test_motor_test_is_a_separate_page(self):
         widget = Widget()
 
-        self.assertEqual(widget.page_stack.count(), 2)
+        self.assertEqual(widget.page_stack.count(), 3)
         self.assertEqual(widget.page_stack.currentIndex(), 0)
         self.assertEqual(widget.motor_nav_button.text(), "电机测试")
 
-        widget._switch_page(1)
+        widget._switch_page(2)
 
-        self.assertEqual(widget.page_stack.currentIndex(), 1)
+        self.assertEqual(widget.page_stack.currentIndex(), 2)
         self.assertTrue(widget.motor_nav_button.isChecked())
         self.assertFalse(widget.device_profile_input.isVisible())
         self.assertEqual(widget.motor_page.device_id_input.text(), "0x01")
@@ -172,6 +172,18 @@ class WidgetTests(unittest.TestCase):
         self.assertIn("4,320,000", widget.motor_page.plan_label.text())
         self.assertEqual(widget.motor_page.canfd_dll_input.text(), str(DEFAULT_CANFD_DLL_PATH))
         self.assertEqual(Path(widget.motor_page.canfd_dll_input.text()).name, "ControlCANFD.dll")
+
+    def test_can_debug_is_a_separate_page_and_receives_shared_frames(self):
+        widget = Widget()
+
+        widget._switch_page(1)
+        widget._append_can_frame("RX", CanFrame(id=0x41, data=bytes.fromhex("82 81 00 00 00 50 01 52")))
+
+        self.assertEqual(widget.page_stack.currentIndex(), 1)
+        self.assertTrue(widget.can_debug_nav_button.isChecked())
+        self.assertEqual(widget.app_icon_label.text(), "CAN")
+        self.assertEqual(widget.can_debug_page.frame_table.rowCount(), 1)
+        self.assertEqual(widget.can_debug_page.frame_table.item(0, 3).text(), "0x41")
 
     def test_motor_fault_state_immediately_stops_and_double_disables(self):
         widget = Widget()

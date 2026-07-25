@@ -7,6 +7,7 @@ files = [
     "README.md",
     "d7_pmu_iap_tool/can/can_frame.py",
     "d7_pmu_iap_tool/can/zlg_vci_can_driver.py",
+    "d7_pmu_iap_tool/can_debug_page.py",
     "d7_pmu_iap_tool/iap/d7_crc32.py",
     "d7_pmu_iap_tool/iap/firmware_image.py",
     "d7_pmu_iap_tool/iap/iap_protocol.py",

@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 from d7_pmu_iap_tool.can.broker_can_driver import ZlgCanBrokerDriver
 from d7_pmu_iap_tool.can.can_frame import CanDriver, CanFrame
 from d7_pmu_iap_tool.can.zlg_vci_can_driver import ZlgVciCanDriver
+from d7_pmu_iap_tool.can_debug_page import CanDebugConfig, CanDebugPage
 from d7_pmu_iap_tool.iap.firmware_image import FirmwareImage
 from d7_pmu_iap_tool.iap.iap_protocol import CMD_FILL_SEGMENT_DATA, IapProtocol
 from d7_pmu_iap_tool.iap.iap_upgrade_controller import (
@@ -134,7 +135,7 @@ class Widget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("D7 CAN IAP")
-        self.resize(1120, 720)
+        self.resize(1280, 820)
 
         self.driver: CanDriver | None = None
         self.upgrade_thread: QThread | None = None
@@ -205,6 +206,9 @@ class Widget(QWidget):
         self.motor_nav_button = QPushButton("电机测试")
         self.motor_nav_button.setObjectName("HeaderNavButton")
         self.motor_nav_button.setCheckable(True)
+        self.can_debug_nav_button = QPushButton("CAN 调试")
+        self.can_debug_nav_button.setObjectName("HeaderNavButton")
+        self.can_debug_nav_button.setCheckable(True)
 
         title_layout = QHBoxLayout()
         title_layout.setContentsMargins(24, 14, 24, 14)
@@ -213,6 +217,7 @@ class Widget(QWidget):
         title_layout.addLayout(title_text_layout)
         title_layout.addStretch(1)
         title_layout.addWidget(self.iap_nav_button)
+        title_layout.addWidget(self.can_debug_nav_button)
         title_layout.addWidget(self.motor_nav_button)
         title_layout.addWidget(self.status_pill)
         self.header_bar = QWidget()
@@ -567,9 +572,21 @@ class Widget(QWidget):
         self.motor_scroll_area.setObjectName("MainScrollArea")
         self.motor_scroll_area.setWidgetResizable(True)
         self.motor_scroll_area.setWidget(self.motor_page)
+        self.can_debug_page = CanDebugPage(
+            send_frame=self._send_debug_frame,
+            open_can=self.open_debug_device,
+            close_can=self.close_device,
+            default_canfd_dll=str(DEFAULT_CANFD_DLL_PATH),
+        )
+        self.can_debug_page.setMinimumSize(1050, 640)
+        self.can_debug_scroll_area = QScrollArea()
+        self.can_debug_scroll_area.setObjectName("MainScrollArea")
+        self.can_debug_scroll_area.setWidgetResizable(True)
+        self.can_debug_scroll_area.setWidget(self.can_debug_page)
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("PageStack")
         self.page_stack.addWidget(self.scroll_area)
+        self.page_stack.addWidget(self.can_debug_scroll_area)
         self.page_stack.addWidget(self.motor_scroll_area)
 
         layout = QVBoxLayout(self)
@@ -595,7 +612,8 @@ class Widget(QWidget):
         self.save_rx_button.clicked.connect(self.save_can_records)
         self.save_log_button.clicked.connect(self.save_system_log)
         self.iap_nav_button.clicked.connect(lambda: self._switch_page(0))
-        self.motor_nav_button.clicked.connect(lambda: self._switch_page(1))
+        self.can_debug_nav_button.clicked.connect(lambda: self._switch_page(1))
+        self.motor_nav_button.clicked.connect(lambda: self._switch_page(2))
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -1016,6 +1034,35 @@ class Widget(QWidget):
                 border-radius: 9px;
                 font-family: "Cascadia Mono", Consolas;
             }
+            QWidget#CanDebugConnectionBar {
+                border: 1px solid #b8d8d2;
+                border-radius: 12px;
+                background: #edf8f5;
+            }
+            QLabel#CanDebugTitle {
+                color: #123c45;
+                background: transparent;
+                font-size: 20px;
+                font-weight: 900;
+            }
+            QLabel#CanDebugConnectionBadge {
+                min-height: 30px;
+                border-radius: 15px;
+                border: 1px solid #cbd5e1;
+                background: #ffffff;
+                color: #64748b;
+                padding: 0 13px;
+                font-weight: 900;
+            }
+            QLabel#CanDebugConnectionBadge[connected="true"] {
+                border-color: #70c1a9;
+                background: #e7f8f0;
+                color: #08745a;
+            }
+            QPushButton#ColorSwatchButton {
+                min-width: 90px;
+                font-family: "Cascadia Mono", Consolas;
+            }
             QStackedWidget#PageStack {
                 background: #f4f7fb;
             }
@@ -1216,9 +1263,10 @@ class Widget(QWidget):
     def _switch_page(self, index: int) -> None:
         self.page_stack.setCurrentIndex(index)
         self.iap_nav_button.setChecked(index == 0)
-        self.motor_nav_button.setChecked(index == 1)
+        self.can_debug_nav_button.setChecked(index == 1)
+        self.motor_nav_button.setChecked(index == 2)
         self.device_profile_input.setVisible(index == 0)
-        self.app_icon_label.setText("IAP" if index == 0 else "M")
+        self.app_icon_label.setText(("IAP", "CAN", "M")[index])
 
     @Slot()
     def open_device(self) -> None:
@@ -1262,6 +1310,39 @@ class Widget(QWidget):
         self._set_connection_status(True, message)
         self._log(message)
 
+    def open_debug_device(self, config: CanDebugConfig) -> None:
+        if _is_zcanpro_running():
+            raise RuntimeError("ZCanPro 正在运行，请先关闭 ZCanPro 后再打开设备")
+        if self.driver:
+            self.close_device()
+        driver = ZlgVciCanDriver(config.dll_path, change_working_directory=False)
+        if not driver.open(
+            config.device_type,
+            DEFAULT_DEVICE_INDEX,
+            config.channel,
+            config.arbitration_baudrate,
+            can_fd=True,
+            data_baudrate=config.data_baudrate,
+        ):
+            raise RuntimeError(driver.last_error)
+        self.driver = driver
+        self._connection_mode = "canfd_debug"
+        message = (
+            f"CAN FD 盒子已打开：CH{driver.channel}，"
+            f"{config.arbitration_baudrate / 1_000_000:g}/"
+            f"{config.data_baudrate / 1_000_000:g} Mbps"
+        )
+        self._set_connection_status(True, message)
+        self._log(f"CAN 调试设备{message}")
+
+    def _send_debug_frame(self, frame: CanFrame) -> None:
+        if not self._can_connected or self._connection_mode != "canfd_debug":
+            raise RuntimeError("请在 CAN 调试页打开 CAN FD 盒子")
+        driver = self._ensure_driver_open()
+        if not driver.send(frame):
+            raise RuntimeError(driver.last_error)
+        self._append_can_frame("TX", frame)
+
     def _send_motor_frame(self, frame: CanFrame) -> None:
         if not self._can_connected or self._connection_mode != "canfd":
             raise RuntimeError("当前不是 CAN FD 连接，请在电机测试页打开 CAN FD")
@@ -1292,6 +1373,8 @@ class Widget(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self.can_poll_timer.stop()
+        if hasattr(self, "can_debug_page"):
+            self.can_debug_page.stop_battery_simulation()
         if hasattr(self, "motor_page"):
             self.motor_page.shutdown()
         if self.driver:
@@ -1549,6 +1632,10 @@ class Widget(QWidget):
             motor_connected = connected and self._connection_mode == "canfd"
             motor_message = message if motor_connected else "CAN FD 未连接"
             self.motor_page.set_connected(motor_connected, motor_message)
+        if hasattr(self, "can_debug_page"):
+            debug_connected = connected and self._connection_mode == "canfd_debug"
+            debug_message = message if debug_connected else "CAN 未连接"
+            self.can_debug_page.set_connected(debug_connected, debug_message)
         if connected:
             self._set_step_state(0, "StepDone", "USBCAN-I 已打开")
         elif failed:
@@ -1563,6 +1650,8 @@ class Widget(QWidget):
 
     def _append_can_frame(self, direction: str, frame: CanFrame) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        if hasattr(self, "can_debug_page"):
+            self.can_debug_page.handle_frame(direction, frame)
         if hasattr(self, "motor_page"):
             self.motor_page.handle_frame(direction, frame)
         if direction == "TX":

@@ -357,7 +357,14 @@ class ZlgVciCanDriver(CanDriver):
             if self._can_fd:
                 fd_buffer = (ZcanReceiveFdData * 1)()
                 count = self._dll.ZCAN_ReceiveFD(self._channel_handle, ctypes.byref(fd_buffer), 1, timeout_ms)
-                buffer = fd_buffer
+                if count == 1:
+                    return zcan_receive_fd_data_to_frame(fd_buffer[0])
+                if count == 0xFFFFFFFF:
+                    self._last_error = "ZCAN_ReceiveFD failed"
+                    return None
+                can_buffer = (ZcanReceiveData * 1)()
+                count = self._dll.ZCAN_Receive(self._channel_handle, ctypes.byref(can_buffer), 1, 0)
+                buffer = can_buffer
             else:
                 can_buffer = (ZcanReceiveData * 1)()
                 count = self._dll.ZCAN_Receive(self._channel_handle, ctypes.byref(can_buffer), 1, timeout_ms)
@@ -367,8 +374,6 @@ class ZlgVciCanDriver(CanDriver):
             if count == 0xFFFFFFFF:
                 self._last_error = "ZCAN_Receive failed"
                 return None
-            if self._can_fd:
-                return zcan_receive_fd_data_to_frame(buffer[0])
             return zcan_receive_data_to_frame(buffer[0])
 
     @property
