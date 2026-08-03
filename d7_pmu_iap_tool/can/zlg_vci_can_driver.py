@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
+import time
 from pathlib import Path
 
 from d7_pmu_iap_tool.can.can_frame import CanDriver, CanFrame
@@ -268,6 +269,11 @@ class ZlgVciCanDriver(CanDriver):
             self._dll.ZCAN_CloseDevice(device_handle)
             return f"ZCAN_InitCAN failed for channel {channel}"
 
+        if can_fd and not self._configure_receive_filters(channel_handle):
+            self._dll.ZCAN_ResetCAN(channel_handle)
+            self._dll.ZCAN_CloseDevice(device_handle)
+            return self._last_error
+
         if self._dll.ZCAN_StartCAN(channel_handle) != STATUS_OK:
             self._dll.ZCAN_ResetCAN(channel_handle)
             self._dll.ZCAN_CloseDevice(device_handle)
@@ -299,6 +305,10 @@ class ZlgVciCanDriver(CanDriver):
                 if self._dll.ZCAN_SetCANFDStandard(device_handle, channel, 0) != STATUS_OK:
                     self._last_error = "CAN FD ISO 模式设置失败"
                     return False
+            if hasattr(self._dll, "ZCAN_SetResistanceEnable"):
+                if self._dll.ZCAN_SetResistanceEnable(device_handle, channel, 1) != STATUS_OK:
+                    self._last_error = f"CAN FD 通道 {channel} 内置终端电阻启用失败"
+                    return False
             return True
 
         if hasattr(self._dll, "ZCAN_SetValue"):
@@ -315,6 +325,37 @@ class ZlgVciCanDriver(CanDriver):
 
         self._last_error = "当前 DLL 缺少 CAN FD 波特率配置接口"
         return False
+
+    def _configure_receive_filters(self, channel_handle: int) -> bool:
+        functions = (
+            "ZCAN_ClearFilter",
+            "ZCAN_SetFilterMode",
+            "ZCAN_SetFilterStartID",
+            "ZCAN_SetFilterEndID",
+            "ZCAN_AckFilter",
+        )
+        if not all(hasattr(self._dll, name) for name in functions):
+            return True
+
+        if self._dll.ZCAN_ClearFilter(channel_handle) != STATUS_OK:
+            self._last_error = "CAN FD 接收滤波器清除失败"
+            return False
+
+        filters = ((0, 0x000, 0x7FF), (1, 0x00000000, 0x1FFFFFFF))
+        for mode, start_id, end_id in filters:
+            if self._dll.ZCAN_SetFilterMode(channel_handle, mode) != STATUS_OK:
+                self._last_error = f"CAN FD 接收滤波模式设置失败：{mode}"
+                return False
+            if self._dll.ZCAN_SetFilterStartID(channel_handle, start_id) != STATUS_OK:
+                self._last_error = f"CAN FD 接收滤波起始 ID 设置失败：0x{start_id:X}"
+                return False
+            if self._dll.ZCAN_SetFilterEndID(channel_handle, end_id) != STATUS_OK:
+                self._last_error = f"CAN FD 接收滤波结束 ID 设置失败：0x{end_id:X}"
+                return False
+            if self._dll.ZCAN_AckFilter(channel_handle) != STATUS_OK:
+                self._last_error = f"CAN FD 接收滤波器生效失败：{mode}"
+                return False
+        return True
 
     def close(self) -> None:
         with self._io_lock:
@@ -355,16 +396,38 @@ class ZlgVciCanDriver(CanDriver):
                 self._last_error = "CAN device is not open"
                 return None
             if self._can_fd:
-                fd_buffer = (ZcanReceiveFdData * 1)()
-                count = self._dll.ZCAN_ReceiveFD(self._channel_handle, ctypes.byref(fd_buffer), 1, timeout_ms)
-                if count == 1:
-                    return zcan_receive_fd_data_to_frame(fd_buffer[0])
-                if count == 0xFFFFFFFF:
-                    self._last_error = "ZCAN_ReceiveFD failed"
-                    return None
+                deadline = time.monotonic() + max(timeout_ms, 0) / 1000
                 can_buffer = (ZcanReceiveData * 1)()
-                count = self._dll.ZCAN_Receive(self._channel_handle, ctypes.byref(can_buffer), 1, 0)
-                buffer = can_buffer
+                fd_buffer = (ZcanReceiveFdData * 1)()
+                while True:
+                    can_count = self._dll.ZCAN_Receive(
+                        self._channel_handle,
+                        ctypes.byref(can_buffer),
+                        1,
+                        0,
+                    )
+                    if can_count == 1:
+                        return zcan_receive_data_to_frame(can_buffer[0])
+                    if can_count == 0xFFFFFFFF:
+                        self._last_error = "ZCAN_Receive failed"
+                        return None
+
+                    fd_count = self._dll.ZCAN_ReceiveFD(
+                        self._channel_handle,
+                        ctypes.byref(fd_buffer),
+                        1,
+                        0,
+                    )
+                    if fd_count == 1:
+                        return zcan_receive_fd_data_to_frame(fd_buffer[0])
+                    if fd_count == 0xFFFFFFFF:
+                        self._last_error = "ZCAN_ReceiveFD failed"
+                        return None
+
+                    remaining_s = deadline - time.monotonic()
+                    if remaining_s <= 0 or timeout_ms <= 0:
+                        return None
+                    time.sleep(min(0.001, remaining_s))
             else:
                 can_buffer = (ZcanReceiveData * 1)()
                 count = self._dll.ZCAN_Receive(self._channel_handle, ctypes.byref(can_buffer), 1, timeout_ms)
@@ -452,6 +515,19 @@ class ZlgVciCanDriver(CanDriver):
             if hasattr(self._dll, "ZCAN_SetCANFDStandard"):
                 self._dll.ZCAN_SetCANFDStandard.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
                 self._dll.ZCAN_SetCANFDStandard.restype = ctypes.c_uint
+            if hasattr(self._dll, "ZCAN_SetResistanceEnable"):
+                self._dll.ZCAN_SetResistanceEnable.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
+                self._dll.ZCAN_SetResistanceEnable.restype = ctypes.c_uint
+            for name in ("ZCAN_ClearFilter", "ZCAN_AckFilter"):
+                if hasattr(self._dll, name):
+                    function = getattr(self._dll, name)
+                    function.argtypes = [ctypes.c_void_p]
+                    function.restype = ctypes.c_uint
+            for name in ("ZCAN_SetFilterMode", "ZCAN_SetFilterStartID", "ZCAN_SetFilterEndID"):
+                if hasattr(self._dll, name):
+                    function = getattr(self._dll, name)
+                    function.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+                    function.restype = ctypes.c_uint
             self._dll.ZCAN_TransmitFD.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
             self._dll.ZCAN_TransmitFD.restype = ctypes.c_uint
             self._dll.ZCAN_ReceiveFD.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_int]

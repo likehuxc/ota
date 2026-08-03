@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from d7_pmu_iap_tool.can.broker_can_driver import ZlgCanBrokerDriver
 from d7_pmu_iap_tool.can.can_frame import CanDriver, CanFrame
 from d7_pmu_iap_tool.can.zlg_vci_can_driver import ZlgVciCanDriver
 from d7_pmu_iap_tool.can_debug_page import CanDebugConfig, CanDebugPage
@@ -46,11 +45,8 @@ from d7_pmu_iap_tool.iap.iap_upgrade_controller import (
     UpgradeOptions,
     build_upgrade_preview_frames,
 )
+from d7_pmu_iap_tool.machine_info_page import MachineInfoCanConfig, MachineInfoPage
 from d7_pmu_iap_tool.motor_test_page import MotorCanFdConfig, MotorTestPage
-
-# ZLG's 32-bit zlgcan.dll (loaded by the 32-bit broker subprocess). It pulls
-# device backends from the sibling kerneldlls\ folder.
-DEFAULT_DLL_PATH = Path(r"C:\Program Files (x86)\ZCANPRO\zlgcan.dll")
 
 
 def _find_default_canfd_dll() -> Path:
@@ -67,9 +63,13 @@ def _find_default_canfd_dll() -> Path:
 
 
 DEFAULT_CANFD_DLL_PATH = _find_default_canfd_dll()
-DEFAULT_DEVICE_TYPE = 3  # ZCAN_USBCAN1 (USBCAN-I)
+DEFAULT_DLL_PATH = DEFAULT_CANFD_DLL_PATH
+DEFAULT_DEVICE_TYPE = 41  # ZCAN_USBCANFD_200U
 DEFAULT_DEVICE_INDEX = 0
+DEFAULT_DATA_BAUDRATE = 5_000_000
 MAX_CAN_ROWS = 500
+MAX_SYSTEM_LOG_BLOCKS = 2_000
+IAP_CONNECTION_MODE = "iap_canfd"
 
 
 @dataclass(frozen=True)
@@ -89,7 +89,7 @@ DEVICE_PROFILES = (
     DeviceProfile("D7-CT01", 0x18, 0x7FF),
     DeviceProfile("D7-CT02", 0x19, 0x7FF),
     DeviceProfile(
-        "D7-沛城电池",
+        "电池升级",
         0x41,
         0x7FF,
         pre_upgrade_wakeup_ms=1000,
@@ -126,6 +126,15 @@ class UpgradeWorker(QObject):
         finally:
             self.finished.emit()
 
+    def handle_can_frame(self, direction: str, frame: CanFrame) -> None:
+        if (
+            frame.dlc >= 3
+            and frame.data[0] == 0x16
+            and frame.data[2] == CMD_FILL_SEGMENT_DATA
+        ):
+            return
+        self.can_frame.emit(direction, frame)
+
     @Slot()
     def cancel(self) -> None:
         self.controller.cancel()
@@ -141,7 +150,7 @@ class Widget(QWidget):
         self.upgrade_thread: QThread | None = None
         self.upgrade_worker: UpgradeWorker | None = None
         self._can_connected = False
-        self._connection_mode = "classic"
+        self._connection_mode = IAP_CONNECTION_MODE
         self.known_can_ids: set[int] = set()
         self.filter_can_ids: set[int] = set()
         self.can_filter_buttons: dict[int, QPushButton] = {}
@@ -176,7 +185,7 @@ class Widget(QWidget):
         default_profile_index = self.device_profile_input.findText(DEFAULT_DEVICE_PROFILE_NAME)
         if default_profile_index >= 0:
             self.device_profile_input.setCurrentIndex(default_profile_index)
-        self.fixed_device_label = QLabel("USBCAN-I · Index 0")
+        self.fixed_device_label = QLabel("USBCANFD-200U · Index 0")
         self.fixed_device_label.setObjectName("SummaryValue")
         self.can_status_dot = QLabel()
         self.can_status_dot.setObjectName("StatusDot")
@@ -209,17 +218,30 @@ class Widget(QWidget):
         self.can_debug_nav_button = QPushButton("CAN 调试")
         self.can_debug_nav_button.setObjectName("HeaderNavButton")
         self.can_debug_nav_button.setCheckable(True)
+        self.machine_info_nav_button = QPushButton("MachineInfo")
+        self.machine_info_nav_button.setObjectName("HeaderNavButton")
+        self.machine_info_nav_button.setCheckable(True)
 
-        title_layout = QHBoxLayout()
-        title_layout.setContentsMargins(24, 14, 24, 14)
-        title_layout.setSpacing(14)
-        title_layout.addWidget(self.app_icon_label)
-        title_layout.addLayout(title_text_layout)
-        title_layout.addStretch(1)
-        title_layout.addWidget(self.iap_nav_button)
-        title_layout.addWidget(self.can_debug_nav_button)
-        title_layout.addWidget(self.motor_nav_button)
-        title_layout.addWidget(self.status_pill)
+        brand_layout = QHBoxLayout()
+        brand_layout.setContentsMargins(0, 0, 0, 0)
+        brand_layout.setSpacing(14)
+        brand_layout.addWidget(self.app_icon_label)
+        brand_layout.addLayout(title_text_layout)
+        brand_layout.addStretch(1)
+        brand_layout.addWidget(self.status_pill)
+        nav_layout = QHBoxLayout()
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(10)
+        nav_layout.addStretch(1)
+        nav_layout.addWidget(self.iap_nav_button)
+        nav_layout.addWidget(self.can_debug_nav_button)
+        nav_layout.addWidget(self.machine_info_nav_button)
+        nav_layout.addWidget(self.motor_nav_button)
+        title_layout = QVBoxLayout()
+        title_layout.setContentsMargins(24, 10, 24, 10)
+        title_layout.setSpacing(8)
+        title_layout.addLayout(brand_layout)
+        title_layout.addLayout(nav_layout)
         self.header_bar = QWidget()
         self.header_bar.setObjectName("HeaderBar")
         self.header_bar.setLayout(title_layout)
@@ -267,7 +289,7 @@ class Widget(QWidget):
         conn_layout.setHorizontalSpacing(18)
         conn_layout.setVerticalSpacing(12)
         self._add_labeled_widget(conn_layout, 0, 0, "通道", self.channel_input)
-        self._add_labeled_widget(conn_layout, 0, 1, "波特率", self.baudrate_input)
+        self._add_labeled_widget(conn_layout, 0, 1, "仲裁波特率", self.baudrate_input)
         self._add_labeled_widget(conn_layout, 2, 0, "目标 ID", self.target_id_input)
         self._add_labeled_widget(conn_layout, 2, 1, "IAP CAN ID", self.can_id_input)
         conn_layout.setColumnStretch(0, 1)
@@ -397,6 +419,7 @@ class Widget(QWidget):
 
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
+        self.log_output.setMaximumBlockCount(MAX_SYSTEM_LOG_BLOCKS)
         self.log_output.setObjectName("LogOutput")
         self.system_log_group = QGroupBox("系统日志")
         self.save_log_button = QPushButton("导出日志")
@@ -450,7 +473,7 @@ class Widget(QWidget):
 
         self.rx_count_value = QLabel("0 帧")
         self.rx_count_value.setObjectName("SummaryValue")
-        self.dll_config_value = QLabel("使用默认 zlgcan.dll")
+        self.dll_config_value = QLabel("使用默认 ControlCANFD.dll")
         self.dll_config_value.setObjectName("SummaryValue")
         self.dll_browse_button = QPushButton("选择 DLL")
         self.dll_browse_button.setObjectName("SecondaryButton")
@@ -578,16 +601,28 @@ class Widget(QWidget):
             close_can=self.close_device,
             default_canfd_dll=str(DEFAULT_CANFD_DLL_PATH),
         )
-        self.can_debug_page.setMinimumSize(1050, 640)
         self.can_debug_scroll_area = QScrollArea()
         self.can_debug_scroll_area.setObjectName("MainScrollArea")
         self.can_debug_scroll_area.setWidgetResizable(True)
+        self.can_debug_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.can_debug_scroll_area.setWidget(self.can_debug_page)
+        self.machine_info_page = MachineInfoPage(
+            send_frame=self._send_debug_frame,
+            open_can=self.open_machine_info_device,
+            close_can=self.close_device,
+            default_canfd_dll=str(DEFAULT_CANFD_DLL_PATH),
+        )
+        self.machine_info_scroll_area = QScrollArea()
+        self.machine_info_scroll_area.setObjectName("MainScrollArea")
+        self.machine_info_scroll_area.setWidgetResizable(True)
+        self.machine_info_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.machine_info_scroll_area.setWidget(self.machine_info_page)
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("PageStack")
         self.page_stack.addWidget(self.scroll_area)
         self.page_stack.addWidget(self.can_debug_scroll_area)
         self.page_stack.addWidget(self.motor_scroll_area)
+        self.page_stack.addWidget(self.machine_info_scroll_area)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -614,6 +649,7 @@ class Widget(QWidget):
         self.iap_nav_button.clicked.connect(lambda: self._switch_page(0))
         self.can_debug_nav_button.clicked.connect(lambda: self._switch_page(1))
         self.motor_nav_button.clicked.connect(lambda: self._switch_page(2))
+        self.machine_info_nav_button.clicked.connect(lambda: self._switch_page(3))
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -757,7 +793,7 @@ class Widget(QWidget):
                 border-color: #2563eb;
             }
             QComboBox {
-                min-width: 118px;
+                min-width: 88px;
                 padding-left: 12px;
                 padding-right: 34px;
                 font-weight: 800;
@@ -1250,14 +1286,23 @@ class Widget(QWidget):
 
     @Slot()
     def _choose_dll(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "选择 zlgcan.dll", str(self.selected_dll_path.parent), "DLL (*.dll);;All files (*.*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 64 位 ControlCANFD.dll",
+            str(self.selected_dll_path.parent),
+            "ControlCANFD.dll (ControlCANFD.dll);;DLL (*.dll);;All files (*.*)",
+        )
         if path:
             self._set_dll_path(Path(path))
 
     def _set_dll_path(self, path: str | Path) -> None:
         self.selected_dll_path = Path(path)
         self.dll_path_label.setText(str(self.selected_dll_path))
-        self.dll_config_value.setText("使用默认 zlgcan.dll" if self.selected_dll_path == DEFAULT_DLL_PATH else "已选择本地 DLL")
+        self.dll_config_value.setText(
+            "使用默认 ControlCANFD.dll"
+            if self.selected_dll_path == DEFAULT_DLL_PATH
+            else "已选择本地 DLL"
+        )
 
     @Slot(int)
     def _switch_page(self, index: int) -> None:
@@ -1265,23 +1310,36 @@ class Widget(QWidget):
         self.iap_nav_button.setChecked(index == 0)
         self.can_debug_nav_button.setChecked(index == 1)
         self.motor_nav_button.setChecked(index == 2)
+        self.machine_info_nav_button.setChecked(index == 3)
         self.device_profile_input.setVisible(index == 0)
-        self.app_icon_label.setText(("IAP", "CAN", "M")[index])
+        self.app_icon_label.setText(("IAP", "CAN", "M", "MI")[index])
 
     @Slot()
     def open_device(self) -> None:
         try:
             if _is_zcanpro_running():
                 raise RuntimeError("ZCanPro 正在运行，请先关闭 ZCanPro 后再打开设备")
+            if self.driver:
+                self.close_device()
             driver = self._make_driver()
             options = self._make_options()
-            if not driver.open(options.device_type, options.device_index, options.channel, options.baudrate):
+            if not driver.open(
+                options.device_type,
+                options.device_index,
+                options.channel,
+                options.baudrate,
+                can_fd=options.can_fd,
+                data_baudrate=options.data_baudrate,
+            ):
                 raise RuntimeError(driver.last_error)
             self.driver = driver
-            self._connection_mode = "classic"
-            message = f"已打开：通道 {driver.channel}，{options.baudrate} bps"
+            self._connection_mode = IAP_CONNECTION_MODE
+            message = (
+                f"CAN FD 已打开：CH{driver.channel}，"
+                f"{options.baudrate / 1_000_000:g}/{options.data_baudrate / 1_000_000:g} Mbps"
+            )
             self._set_connection_status(True, message)
-            self._log(f"CAN 设备{message}")
+            self._log(f"IAP {message}")
         except Exception as exc:
             self._set_connection_status(False, f"打开失败：{exc}", failed=True)
             self._show_error(str(exc))
@@ -1311,6 +1369,16 @@ class Widget(QWidget):
         self._log(message)
 
     def open_debug_device(self, config: CanDebugConfig) -> None:
+        self._open_canfd_tool_device(config, "CAN 调试设备")
+
+    def open_machine_info_device(self, config: MachineInfoCanConfig) -> None:
+        self._open_canfd_tool_device(config, "MachineInfo 设备")
+
+    def _open_canfd_tool_device(
+        self,
+        config: CanDebugConfig | MachineInfoCanConfig,
+        source: str,
+    ) -> None:
         if _is_zcanpro_running():
             raise RuntimeError("ZCanPro 正在运行，请先关闭 ZCanPro 后再打开设备")
         if self.driver:
@@ -1326,18 +1394,18 @@ class Widget(QWidget):
         ):
             raise RuntimeError(driver.last_error)
         self.driver = driver
-        self._connection_mode = "canfd_debug"
+        self._connection_mode = "canfd_tools"
         message = (
             f"CAN FD 盒子已打开：CH{driver.channel}，"
             f"{config.arbitration_baudrate / 1_000_000:g}/"
             f"{config.data_baudrate / 1_000_000:g} Mbps"
         )
         self._set_connection_status(True, message)
-        self._log(f"CAN 调试设备{message}")
+        self._log(f"{source}{message}")
 
     def _send_debug_frame(self, frame: CanFrame) -> None:
-        if not self._can_connected or self._connection_mode != "canfd_debug":
-            raise RuntimeError("请在 CAN 调试页打开 CAN FD 盒子")
+        if not self._can_connected or self._connection_mode != "canfd_tools":
+            raise RuntimeError("请在 CAN 调试或 MachineInfo 页打开 CAN FD 盒子")
         driver = self._ensure_driver_open()
         if not driver.send(frame):
             raise RuntimeError(driver.last_error)
@@ -1368,6 +1436,7 @@ class Widget(QWidget):
             if hasattr(self.driver, "shutdown"):
                 self.driver.shutdown()
             self.driver = None
+        self._connection_mode = None
         self._set_connection_status(False, "未连接")
         self._log("CAN 设备已关闭")
 
@@ -1375,6 +1444,8 @@ class Widget(QWidget):
         self.can_poll_timer.stop()
         if hasattr(self, "can_debug_page"):
             self.can_debug_page.stop_battery_simulation()
+        if hasattr(self, "machine_info_page"):
+            self.machine_info_page.shutdown()
         if hasattr(self, "motor_page"):
             self.motor_page.shutdown()
         if self.driver:
@@ -1414,7 +1485,7 @@ class Widget(QWidget):
             self.upgrade_worker = UpgradeWorker(controller, image, self._make_options())
             controller.on_log = self.upgrade_worker.log.emit
             controller.on_progress = self.upgrade_worker.progress.emit
-            controller.on_frame = self.upgrade_worker.can_frame.emit
+            controller.on_frame = self.upgrade_worker.handle_can_frame
             self.upgrade_worker.moveToThread(self.upgrade_thread)
             self.upgrade_thread.started.connect(self.upgrade_worker.run)
             self.upgrade_worker.log.connect(self._handle_upgrade_log)
@@ -1514,8 +1585,8 @@ class Widget(QWidget):
                 return
             self._append_can_frame("RX", frame)
 
-    def _make_driver(self) -> ZlgCanBrokerDriver:
-        return ZlgCanBrokerDriver(self.selected_dll_path)
+    def _make_driver(self) -> ZlgVciCanDriver:
+        return ZlgVciCanDriver(str(self.selected_dll_path), change_working_directory=False)
 
     @Slot(int)
     def _handle_device_profile_changed(self, _index: int) -> None:
@@ -1548,12 +1619,23 @@ class Widget(QWidget):
             raise RuntimeError("ZCanPro 正在运行，请先关闭 ZCanPro 后再打开设备")
         driver = self._make_driver()
         options = self._make_options()
-        if not driver.open(options.device_type, options.device_index, options.channel, options.baudrate):
+        if not driver.open(
+            options.device_type,
+            options.device_index,
+            options.channel,
+            options.baudrate,
+            can_fd=options.can_fd,
+            data_baudrate=options.data_baudrate,
+        ):
             raise RuntimeError(driver.last_error)
         self.driver = driver
-        message = f"已打开：通道 {driver.channel}，{options.baudrate} bps"
+        self._connection_mode = IAP_CONNECTION_MODE
+        message = (
+            f"CAN FD 已打开：CH{driver.channel}，"
+            f"{options.baudrate / 1_000_000:g}/{options.data_baudrate / 1_000_000:g} Mbps"
+        )
         self._set_connection_status(True, message)
-        self._log(f"CAN 设备{message}")
+        self._log(f"IAP {message}")
         return driver
 
     def _make_protocol(self) -> IapProtocol:
@@ -1564,7 +1646,9 @@ class Widget(QWidget):
             device_type=DEFAULT_DEVICE_TYPE,
             device_index=DEFAULT_DEVICE_INDEX,
             channel=self.channel_input.currentData(),
-            baudrate=self.baudrate_input.currentData(),
+            baudrate=self.baudrate_input.currentData(), 
+            can_fd=True,
+            data_baudrate=DEFAULT_DATA_BAUDRATE,
             pre_upgrade_wakeup_ms=self._selected_device_profile().pre_upgrade_wakeup_ms,
             disable_target_can_messages=self._selected_device_profile().disable_target_can_messages,
             wait_data_frame_ack=self._selected_device_profile().wait_data_frame_ack,
@@ -1606,12 +1690,12 @@ class Widget(QWidget):
         elif self._can_connected:
             self.can_poll_timer.start()
 
-        classic_connected = self._can_connected and self._connection_mode == "classic"
-        self.start_upgrade_button.setEnabled(not busy and classic_connected)
+        iap_connected = self._can_connected and self._connection_mode == IAP_CONNECTION_MODE
+        self.start_upgrade_button.setEnabled(not busy and iap_connected)
         self.simulate_battery_button.setEnabled(not busy)
         self.open_button.setEnabled(not busy and not self._can_connected)
         self.close_button.setEnabled(not busy and self._can_connected)
-        self.query_role_button.setEnabled(not busy and classic_connected)
+        self.query_role_button.setEnabled(not busy and iap_connected)
         self.send_button.setEnabled(not busy and self._can_connected)
         self.stop_button.setEnabled(busy)
         for config_widget in (
@@ -1633,11 +1717,15 @@ class Widget(QWidget):
             motor_message = message if motor_connected else "CAN FD 未连接"
             self.motor_page.set_connected(motor_connected, motor_message)
         if hasattr(self, "can_debug_page"):
-            debug_connected = connected and self._connection_mode == "canfd_debug"
+            debug_connected = connected and self._connection_mode == "canfd_tools"
             debug_message = message if debug_connected else "CAN 未连接"
             self.can_debug_page.set_connected(debug_connected, debug_message)
+        if hasattr(self, "machine_info_page"):
+            machine_info_connected = connected and self._connection_mode == "canfd_tools"
+            machine_info_message = message if machine_info_connected else "CAN 未连接"
+            self.machine_info_page.set_connected(machine_info_connected, machine_info_message)
         if connected:
-            self._set_step_state(0, "StepDone", "USBCAN-I 已打开")
+            self._set_step_state(0, "StepDone", "USBCANFD-200U 已打开")
         elif failed:
             self._set_step_state(0, "StepActive", "打开失败")
         else:
@@ -1652,6 +1740,8 @@ class Widget(QWidget):
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         if hasattr(self, "can_debug_page"):
             self.can_debug_page.handle_frame(direction, frame)
+        if hasattr(self, "machine_info_page"):
+            self.machine_info_page.handle_frame(direction, frame)
         if hasattr(self, "motor_page"):
             self.motor_page.handle_frame(direction, frame)
         if direction == "TX":

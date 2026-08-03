@@ -29,10 +29,12 @@ FrameCallback = Callable[[str, CanFrame], None]
 
 @dataclass(frozen=True)
 class UpgradeOptions:
-    device_type: int = 3
+    device_type: int = 41
     device_index: int = 0
     channel: int = 0
     baudrate: int = 1_000_000
+    can_fd: bool = True
+    data_baudrate: int = 5_000_000
     ack_timeout_ms: int = 500
     erase_timeout_ms: int = 3_000
     write_timeout_ms: int = 3_000
@@ -160,9 +162,26 @@ class IapUpgradeController:
     def _open_if_needed(self, options: UpgradeOptions) -> None:
         if self.driver.is_open():
             return
-        if not self.driver.open(options.device_type, options.device_index, options.channel, options.baudrate):
+        if not self.driver.open(
+            options.device_type,
+            options.device_index,
+            options.channel,
+            options.baudrate,
+            can_fd=options.can_fd,
+            data_baudrate=options.data_baudrate,
+        ):
             raise RuntimeError(f"打开 CAN 设备失败：{self.driver.last_error}")
-        self._log(f"CAN 已打开：deviceType={options.device_type}, index={options.device_index}, channel={options.channel}, baudrate={options.baudrate}")
+        if options.can_fd:
+            self._log(
+                f"CAN FD 已打开：deviceType={options.device_type}, index={options.device_index}, "
+                f"channel={options.channel}, "
+                f"{options.baudrate}/{options.data_baudrate} bps"
+            )
+        else:
+            self._log(
+                f"CAN 已打开：deviceType={options.device_type}, index={options.device_index}, "
+                f"channel={options.channel}, baudrate={options.baudrate}"
+            )
 
     def _wait_for_boot(self, options: UpgradeOptions) -> str:
         deadline = time.monotonic() + options.boot_total_wait_ms / 1000

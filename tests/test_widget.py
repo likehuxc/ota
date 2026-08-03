@@ -70,7 +70,7 @@ class WidgetTests(unittest.TestCase):
         widget = Widget()
 
         labels = [widget.device_profile_input.itemText(index) for index in range(widget.device_profile_input.count())]
-        self.assertEqual(labels, ["D7-CT01", "D7-CT02", "D7-沛城电池"])
+        self.assertEqual(labels, ["D7-CT01", "D7-CT02", "电池升级"])
         self.assertEqual(widget.device_profile_input.currentText(), "D7-CT02")
         self.assertEqual(widget.target_id_input.text(), "0x19")
         self.assertEqual(widget.can_id_input.text(), "0x7ff")
@@ -83,7 +83,7 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(widget._make_protocol().target_id, 0x18)
         self.assertEqual(widget._make_protocol().can_id, 0x7FF)
 
-        widget.device_profile_input.setCurrentIndex(widget.device_profile_input.findText("D7-沛城电池"))
+        widget.device_profile_input.setCurrentIndex(widget.device_profile_input.findText("电池升级"))
 
         self.assertEqual(widget.target_id_input.text(), "0x41")
         self.assertEqual(widget.can_id_input.text(), "0x7ff")
@@ -120,7 +120,7 @@ class WidgetTests(unittest.TestCase):
         ) in (
             ("D7-CT01", "0x18", False, False, False, 1000, 5000),
             ("D7-CT02", "0x19", False, False, False, 1000, 5000),
-            ("D7-沛城电池", "0x41", True, False, True, 10000, 25000),
+            ("电池升级", "0x41", True, False, True, 10000, 25000),
         ):
             with self.subTest(profile_name=profile_name):
                 widget.device_profile_input.setCurrentIndex(widget.device_profile_input.findText(profile_name))
@@ -157,7 +157,7 @@ class WidgetTests(unittest.TestCase):
     def test_motor_test_is_a_separate_page(self):
         widget = Widget()
 
-        self.assertEqual(widget.page_stack.count(), 3)
+        self.assertEqual(widget.page_stack.count(), 4)
         self.assertEqual(widget.page_stack.currentIndex(), 0)
         self.assertEqual(widget.motor_nav_button.text(), "电机测试")
 
@@ -184,6 +184,67 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(widget.app_icon_label.text(), "CAN")
         self.assertEqual(widget.can_debug_page.frame_table.rowCount(), 1)
         self.assertEqual(widget.can_debug_page.frame_table.item(0, 3).text(), "0x41")
+
+    def test_machine_info_is_a_separate_page_and_receives_shared_frames(self):
+        widget = Widget()
+        widget.driver = FakeDriver()
+        widget._connection_mode = "canfd_tools"
+        widget._set_connection_status(True, "CAN FD 已打开")
+
+        widget._switch_page(3)
+        widget._append_can_frame("RX", CanFrame(id=0x08, data=bytes.fromhex("53 00 3E 0F 5C 29 02 15")))
+
+        row = next(
+            row
+            for row in range(widget.machine_info_page.table.rowCount())
+            if widget.machine_info_page.table.item(row, 2).text() == "wheel_diameter"
+        )
+        self.assertEqual(widget.page_stack.currentIndex(), 3)
+        self.assertTrue(widget.machine_info_nav_button.isChecked())
+        self.assertEqual(widget.app_icon_label.text(), "MI")
+        self.assertTrue(widget.can_debug_page._connected)
+        self.assertTrue(widget.machine_info_page._connected)
+        self.assertEqual(widget.machine_info_page.table.item(row, 4).text(), "0.14")
+        self.assertEqual(widget.can_debug_page.frame_table.rowCount(), 1)
+
+    def test_machine_info_page_remains_scrollable_at_compact_window_size(self):
+        widget = Widget()
+        widget._switch_page(3)
+        widget.show()
+        widget.resize(800, 600)
+        self.app.processEvents()
+
+        outer_scroll = widget.machine_info_scroll_area.verticalScrollBar()
+        self.assertGreater(outer_scroll.maximum(), 0)
+        outer_scroll.setValue(outer_scroll.maximum())
+        widget.machine_info_page.table.scrollToBottom()
+        self.app.processEvents()
+        last_row = widget.machine_info_page.table.rowCount() - 1
+        last_item_rect = widget.machine_info_page.table.visualItemRect(
+            widget.machine_info_page.table.item(last_row, 2)
+        )
+
+        self.assertLessEqual(last_item_rect.bottom(), widget.machine_info_page.table.viewport().height())
+
+    def test_can_debug_cards_stack_when_page_is_narrow(self):
+        widget = Widget()
+        page = widget.can_debug_page
+        widget._switch_page(1)
+        widget.show()
+
+        widget.resize(800, 700)
+        self.app.processEvents()
+        battery_position = page.controls_layout.getItemPosition(page.controls_layout.indexOf(page.battery_card))
+        light_position = page.controls_layout.getItemPosition(page.controls_layout.indexOf(page.light_card))
+
+        self.assertNotEqual(battery_position[0], light_position[0])
+
+        widget.resize(1200, 800)
+        self.app.processEvents()
+        battery_position = page.controls_layout.getItemPosition(page.controls_layout.indexOf(page.battery_card))
+        light_position = page.controls_layout.getItemPosition(page.controls_layout.indexOf(page.light_card))
+
+        self.assertEqual(battery_position[0], light_position[0])
 
     def test_motor_fault_state_immediately_stops_and_double_disables(self):
         widget = Widget()
