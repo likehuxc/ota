@@ -7,6 +7,7 @@ from d7_pmu_iap_tool.iap.iap_protocol import (
     CMD_ENABLE_CAN,
     CMD_FILL_SEGMENT_DATA,
     CMD_GET_RUN_ROLE,
+    CMD_GET_SOFT_VERSION,
     CMD_JUMP_TO_APP,
     CMD_SET_FIRMWARE_SIZE,
     CMD_SET_SEGMENT_INFO,
@@ -135,6 +136,17 @@ class UpgradeControllerTests(unittest.TestCase):
         self.assertTrue(any("ACK 解析失败" in line for line in logs))
         self.assertTrue(any("RX ID=0x7FF" in line for line in logs))
         self.assertTrue(any("Data=16 19 02 01 00 00 00 32" in line for line in logs))
+
+    def test_queries_and_logs_software_version(self):
+        driver = FakeCanDriver([ack(CMD_GET_SOFT_VERSION, b"\x01\x0C\x03")])
+        logs = []
+        controller = IapUpgradeController(driver, IapProtocol(), on_log=logs.append)
+
+        version = controller.query_software_version()
+
+        self.assertEqual(version, "1.12.3")
+        self.assertEqual(driver.sent[0].data[2], CMD_GET_SOFT_VERSION)
+        self.assertIn("当前软件版本 1.12.3", logs)
 
     def test_runs_full_upgrade_from_app_to_boot_to_jump(self):
         image = FirmwareImage.from_bytes(struct.pack("<II", 0x20001000, 0x000202C9) + bytes(range(256)) * 5)

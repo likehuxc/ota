@@ -11,6 +11,7 @@ from d7_pmu_iap_tool.iap.iap_protocol import (
     CMD_ENABLE_CAN,
     CMD_FILL_SEGMENT_DATA,
     CMD_GET_RUN_ROLE,
+    CMD_GET_SOFT_VERSION,
     CMD_JUMP_TO_APP,
     CMD_SET_FIRMWARE_SIZE,
     CMD_SET_SEGMENT_INFO,
@@ -158,6 +159,16 @@ class IapUpgradeController:
         role = self.protocol.ack_role(ack)
         self._log(f"当前角色 {role}")
         return role
+
+    def query_software_version(self, timeout_ms: int = 500) -> str:
+        ack = self._command_with_ack(
+            self.protocol.get_software_version(),
+            CMD_GET_SOFT_VERSION,
+            timeout_ms,
+        )
+        version = self.protocol.ack_software_version(ack)
+        self._log(f"当前软件版本 {version}")
+        return version
 
     def _open_if_needed(self, options: UpgradeOptions) -> None:
         if self.driver.is_open():
@@ -323,9 +334,11 @@ class IapUpgradeController:
             remaining_ms = int((deadline - time.monotonic()) * 1000)
             if remaining_ms <= 0:
                 raise RuntimeError(f"等待 0x{expected_cmd:02X} ACK 超时")
-            ack_frame = self.driver.receive(remaining_ms)
+            # Some CAN drivers can return an empty read before their requested
+            # timeout expires. Keep polling until our own deadline is reached.
+            ack_frame = self.driver.receive(min(remaining_ms, 50))
             if ack_frame is None:
-                raise RuntimeError(f"等待 0x{expected_cmd:02X} ACK 超时")
+                continue
             self.on_frame("RX", ack_frame)
             ack_ids = (self.protocol.can_id, self.protocol.target_id) if accept_tx_can_id_ack else (self.protocol.target_id,)
             if ack_frame.id not in ack_ids:

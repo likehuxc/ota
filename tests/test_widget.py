@@ -399,6 +399,7 @@ class WidgetTests(unittest.TestCase):
         self.assertTrue(widget.open_button.isEnabled())
         self.assertFalse(widget.close_button.isEnabled())
         self.assertFalse(widget.query_role_button.isEnabled())
+        self.assertFalse(widget.query_version_button.isEnabled())
         self.assertFalse(widget.start_upgrade_button.isEnabled())
         self.assertTrue(widget.simulate_battery_button.isEnabled())
 
@@ -411,6 +412,7 @@ class WidgetTests(unittest.TestCase):
         self.assertFalse(widget.open_button.isEnabled())
         self.assertTrue(widget.close_button.isEnabled())
         self.assertTrue(widget.query_role_button.isEnabled())
+        self.assertTrue(widget.query_version_button.isEnabled())
         self.assertTrue(widget.start_upgrade_button.isEnabled())
 
         widget._set_connection_status(False, "未连接")
@@ -419,6 +421,7 @@ class WidgetTests(unittest.TestCase):
         self.assertTrue(widget.open_button.isEnabled())
         self.assertFalse(widget.close_button.isEnabled())
         self.assertFalse(widget.query_role_button.isEnabled())
+        self.assertFalse(widget.query_version_button.isEnabled())
         self.assertFalse(widget.start_upgrade_button.isEnabled())
 
     def test_query_role_updates_current_device_role_display(self):
@@ -439,6 +442,17 @@ class WidgetTests(unittest.TestCase):
         widget._handle_upgrade_log("当前角色 BOOT")
 
         self.assertEqual(widget.role_value_label.text(), "BOOT")
+
+    def test_query_software_version_updates_version_display(self):
+        widget = Widget()
+        widget.driver = FakeDriver()
+        widget._set_connection_status(True, "已打开：通道 0，1000000 bps")
+
+        with patch("widget.IapUpgradeController") as controller_cls:
+            controller_cls.return_value.query_software_version.return_value = "1.12.3"
+            widget.query_software_version()
+
+        self.assertEqual(widget.version_value_label.text(), "1.12.3")
 
     def test_dialog_position_is_horizontally_centered_and_one_third_down(self):
         widget = Widget()

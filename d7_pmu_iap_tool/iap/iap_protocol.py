@@ -119,6 +119,11 @@ class IapProtocol:
             raise ValueError("ACK is not a role response")
         return RUN_ROLE_BOOTLOADER if ack.params[0] == 1 else RUN_ROLE_APP
 
+    def ack_software_version(self, ack: IapAck) -> str:
+        if ack.command != CMD_GET_SOFT_VERSION:
+            raise ValueError("ACK is not a software version response")
+        return ".".join(str(part) for part in ack.params[:3])
+
     def _tail_command(self, command: int, params: bytes = b"\x00\x00\x00") -> CanFrame:
         if len(params) != 3:
             raise ValueError("IAP tail command params must be exactly 3 bytes")

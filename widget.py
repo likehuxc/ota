@@ -349,6 +349,8 @@ class Widget(QWidget):
 
         self.query_role_button = QPushButton("重新查询角色")
         self.query_role_button.setObjectName("SecondaryButton")
+        self.query_version_button = QPushButton("重新查询版本")
+        self.query_version_button.setObjectName("SecondaryButton")
         self.start_upgrade_button = QPushButton("开始升级")
         self.start_upgrade_button.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.simulate_battery_button = QPushButton("模拟电池升级")
@@ -374,13 +376,41 @@ class Widget(QWidget):
         role_text_layout.setSpacing(4)
         role_text_layout.addWidget(role_title_label)
         role_text_layout.addWidget(self.role_value_label)
+
+        self.version_value_label = QLabel("--")
+        self.version_value_label.setObjectName("RoleValue")
+        version_title_label = QLabel("当前软件版本")
+        version_title_label.setObjectName("MutedLabel")
+        version_text_layout = QVBoxLayout()
+        version_text_layout.setContentsMargins(0, 0, 0, 0)
+        version_text_layout.setSpacing(4)
+        version_text_layout.addWidget(version_title_label)
+        version_text_layout.addWidget(self.version_value_label)
+
+        role_panel = QWidget()
+        role_panel_layout = QHBoxLayout(role_panel)
+        role_panel_layout.setContentsMargins(0, 0, 14, 0)
+        role_panel_layout.setSpacing(10)
+        role_panel_layout.addLayout(role_text_layout)
+        role_panel_layout.addStretch(1)
+        role_panel_layout.addWidget(self.query_role_button)
+
+        version_panel = QWidget()
+        version_panel.setObjectName("VersionPanel")
+        version_panel_layout = QHBoxLayout(version_panel)
+        version_panel_layout.setContentsMargins(14, 0, 0, 0)
+        version_panel_layout.setSpacing(10)
+        version_panel_layout.addLayout(version_text_layout)
+        version_panel_layout.addStretch(1)
+        version_panel_layout.addWidget(self.query_version_button)
+
         self.role_band = QWidget()
         self.role_band.setObjectName("RoleBand")
         role_layout = QHBoxLayout()
         role_layout.setContentsMargins(14, 12, 14, 12)
-        role_layout.addLayout(role_text_layout)
-        role_layout.addStretch(1)
-        role_layout.addWidget(self.query_role_button)
+        role_layout.setSpacing(0)
+        role_layout.addWidget(role_panel, 1)
+        role_layout.addWidget(version_panel, 1)
         self.role_band.setLayout(role_layout)
 
         progress_title = QLabel("写入进度")
@@ -636,6 +666,7 @@ class Widget(QWidget):
         self.open_button.clicked.connect(self.open_device)
         self.close_button.clicked.connect(self.close_device)
         self.query_role_button.clicked.connect(self.query_role)
+        self.query_version_button.clicked.connect(self.query_software_version)
         self.start_upgrade_button.clicked.connect(self.start_upgrade)
         self.simulate_battery_button.clicked.connect(self.simulate_battery_upgrade)
         self.stop_button.clicked.connect(self.stop_upgrade)
@@ -926,6 +957,9 @@ class Widget(QWidget):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #eff6ff, stop:1 #f8fafc);
                 border: 1px solid #dbeafe;
                 border-radius: 13px;
+            }
+            QWidget#VersionPanel {
+                border-left: 1px solid #dbeafe;
             }
             QLabel#RoleValue {
                 color: #1e3a8a;
@@ -1472,6 +1506,25 @@ class Widget(QWidget):
                 self.can_poll_timer.start()
 
     @Slot()
+    def query_software_version(self) -> None:
+        was_polling = self.can_poll_timer.isActive()
+        self.can_poll_timer.stop()
+        try:
+            driver = self._ensure_driver_open()
+            controller = IapUpgradeController(
+                driver,
+                self._make_protocol(),
+                on_log=self._handle_upgrade_log,
+                on_frame=self._append_can_frame,
+            )
+            self.version_value_label.setText(controller.query_software_version())
+        except Exception as exc:
+            self._show_error(str(exc))
+        finally:
+            if was_polling and self._can_connected:
+                self.can_poll_timer.start()
+
+    @Slot()
     def start_upgrade(self) -> None:
         try:
             self.error_box.hide()
@@ -1696,6 +1749,7 @@ class Widget(QWidget):
         self.open_button.setEnabled(not busy and not self._can_connected)
         self.close_button.setEnabled(not busy and self._can_connected)
         self.query_role_button.setEnabled(not busy and iap_connected)
+        self.query_version_button.setEnabled(not busy and iap_connected)
         self.send_button.setEnabled(not busy and self._can_connected)
         self.stop_button.setEnabled(busy)
         for config_widget in (

@@ -3,7 +3,7 @@ import unittest
 
 from d7_pmu_iap_tool.iap.d7_crc32 import d7_crc32, d7_crc32_append
 from d7_pmu_iap_tool.iap.firmware_image import FirmwareImage
-from d7_pmu_iap_tool.iap.iap_protocol import IapAck, IapProtocol
+from d7_pmu_iap_tool.iap.iap_protocol import CMD_GET_SOFT_VERSION, IapAck, IapProtocol
 
 
 class D7Crc32Tests(unittest.TestCase):
@@ -85,6 +85,12 @@ class IapProtocolTests(unittest.TestCase):
         self.assertEqual(ack, IapAck(command=0x02, params=bytes([1, 0, 0, 0xE9])))
         with self.assertRaises(ValueError):
             protocol.parse_ack(bytes([0x16, 0x19, 0x02, 1, 0, 0, 0, 0x32]), expected_cmd=0x02)
+
+    def test_formats_software_version_from_ack_parameters(self):
+        protocol = IapProtocol()
+        ack = IapAck(command=CMD_GET_SOFT_VERSION, params=bytes([1, 12, 3, 0xE9]))
+
+        self.assertEqual(protocol.ack_software_version(ack), "1.12.3")
 
 
 class FirmwareImageTests(unittest.TestCase):
